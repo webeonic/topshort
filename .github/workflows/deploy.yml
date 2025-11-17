@@ -13,14 +13,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up SSH
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
-
-      - name: Add Digital Ocean to known hosts
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
+          echo "${{ secrets.DO_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy to Digital Ocean
@@ -28,24 +25,29 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh $DO_USER@$DO_HOST << 'ENDSSH'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $DO_USER@$DO_HOST << 'ENDSSH'
+            set -e
             cd /opt/topshort
 
-            # Pull latest code
+            echo "📥 Pulling latest code..."
             git pull origin main
 
-            # Stop running container
-            docker-compose down
+            echo "🛑 Stopping container..."
+            docker-compose down || true
 
-            # Rebuild and start
+            echo "🔨 Building new image..."
             docker-compose build --no-cache
+
+            echo "🚀 Starting container..."
             docker-compose up -d
 
-            # Clean up old images
-            docker image prune -f
+            echo "🧹 Cleaning up old images..."
+            docker image prune -f || true
 
-            # Show status
+            echo "📊 Container status:"
             docker-compose ps
+
+            echo "📋 Recent logs:"
             docker-compose logs --tail=50
           ENDSSH
 
@@ -54,19 +56,25 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh $DO_USER@$DO_HOST << 'ENDSSH'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no $DO_USER@$DO_HOST << 'ENDSSH'
             cd /opt/topshort
 
-            # Wait for container to be healthy
-            sleep 10
+            echo "⏳ Waiting for container to start..."
+            sleep 15
 
-            # Check container status
+            echo "🔍 Checking container status..."
             if docker-compose ps | grep -q "Up"; then
-              echo "✅ Deployment successful"
+              echo "✅ Deployment successful!"
+              docker-compose ps
               exit 0
             else
-              echo "❌ Deployment failed"
+              echo "❌ Deployment failed!"
               docker-compose logs --tail=100
               exit 1
             fi
           ENDSSH
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key
