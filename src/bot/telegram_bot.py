@@ -1,4 +1,5 @@
 """Telegram bot initialization and management."""
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -19,6 +20,7 @@ class TelegramBot:
         self.commands = BotCommands(session, engine)
         self.application = None
         self.chat_id = config.chat_id
+        self._stop_event = asyncio.Event()
 
     def setup(self):
         """Setup bot application and handlers."""
@@ -43,6 +45,12 @@ class TelegramBot:
         self.application.add_handler(CommandHandler("help", self.commands.start))
 
         logger.info("Telegram bot handlers registered")
+
+    async def initialize(self):
+        """Initialize the telegram application."""
+        logger.info("Initializing Telegram application")
+        await self.application.initialize()
+        await self.application.start()
 
     async def send_message(self, text: str, parse_mode: str = 'Markdown'):
         """Send message to configured chat."""
@@ -114,10 +122,26 @@ class TelegramBot:
     async def start_polling(self):
         """Start bot polling."""
         logger.info("Starting Telegram bot polling")
-        await self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Start the updater to begin polling
+        await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+
+        # Keep the bot running until stop event is set
+        logger.info("Bot is now polling for updates")
+        await self._stop_event.wait()
 
     async def stop(self):
         """Stop bot."""
         logger.info("Stopping Telegram bot")
         if self.application:
-            await self.application.stop()
+            try:
+                # Signal the stop event to exit the polling wait
+                self._stop_event.set()
+
+                # Stop the updater first
+                if self.application.updater.running:
+                    await self.application.updater.stop()
+                # Then stop and shutdown the application
+                await self.application.stop()
+                await self.application.shutdown()
+            except Exception as e:
+                logger.error(f"Error stopping bot: {e}")

@@ -128,6 +128,9 @@ class TopShortBot:
         """Start the bot."""
         self.logger.info("Starting TopShort Trading Bot...")
 
+        # Initialize telegram bot application
+        await self.telegram_bot.initialize()
+
         # Send startup notification
         await self.telegram_bot.send_message(
             "🚀 *TopShort Bot started*\n\n"
@@ -173,22 +176,34 @@ class TopShortBot:
             # Initialize
             self.initialize()
 
-            # Setup signal handlers
-            def signal_handler(sig, frame):
-                self.logger.info(f"Received signal {sig}, shutting down...")
-                asyncio.create_task(self.stop())
-
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
-
-            # Run async event loop
-            asyncio.run(self.start())
+            # Run async event loop with proper signal handling
+            asyncio.run(self._run_with_signals())
 
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt received")
         except Exception as e:
             self.logger.error(f"Fatal error: {e}", exc_info=True)
             sys.exit(1)
+
+    async def _run_with_signals(self):
+        """Run the bot with proper signal handling."""
+        # Setup signal handlers for graceful shutdown
+        loop = asyncio.get_running_loop()
+
+        def signal_handler():
+            self.logger.info("Received shutdown signal, stopping...")
+            asyncio.create_task(self.stop())
+
+        # Register signal handlers
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, signal_handler)
+
+        try:
+            await self.start()
+        finally:
+            # Cleanup signal handlers
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.remove_signal_handler(sig)
 
 
 def main():
