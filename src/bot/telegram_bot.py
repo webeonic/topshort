@@ -60,52 +60,52 @@ class TelegramBot:
     async def notify_position_opened(self, position_info: dict):
         """Send notification when position is opened."""
         message = f"""
-<� *B:@KB0 =>20O ?>78F8O*
+🟢 *New Position Opened*
 
-=� *{position_info['symbol']}*
- E>4: {position_info['entry_price']:.4f}
- TP: {position_info['take_profit_price']:.4f}
- Leverage: {position_info['leverage']}x
- 0@60: {position_info['margin']:.2f} USDT
- Order ID: {position_info.get('order_id', 'N/A')}
+📊 *{position_info['symbol']}*
+💰 Entry: {position_info['entry_price']:.4f}
+🎯 TP: {position_info['take_profit_price']:.4f}
+📈 Leverage: {position_info['leverage']}x
+💵 Margin: {position_info['margin']:.2f} USDT
+🔖 Order ID: {position_info.get('order_id', 'N/A')}
 """
         await self.send_message(message)
 
     async def notify_position_closed(self, close_info: dict):
         """Send notification when position is closed."""
-        pnl_emoji = "=�" if close_info['pnl'] > 0 else "=4"
+        pnl_emoji = "🟢" if close_info['pnl'] > 0 else "🔴"
 
         message = f"""
-= *>78F8O 70:@KB0*
+🔵 *Position Closed*
 
-=� *{close_info['symbol']}*
- E>4: {close_info['entry_price']:.4f}
- KE>4: {close_info['exit_price']:.4f}
- {pnl_emoji} P&L: {close_info['pnl']:.2f} USDT ({close_info['pnl_pct']:.2f}%)
- @8G8=0: {close_info['reason']}
- ID: {close_info['position_id']}
+📊 *{close_info['symbol']}*
+💰 Entry: {close_info['entry_price']:.4f}
+💰 Exit: {close_info['exit_price']:.4f}
+{pnl_emoji} P&L: {close_info['pnl']:.2f} USDT ({close_info['pnl_pct']:.2f}%)
+📝 Reason: {close_info['reason']}
+🔖 ID: {close_info['position_id']}
 """
         await self.send_message(message)
 
     async def notify_scan_complete(self, scan_result: dict):
         """Send notification when scan is complete."""
         message = f"""
-= *!:0=8@>20=85 7025@H5=>*
+🔍 *Scan Completed*
 
-=� 0945=> A83=0;>2: {scan_result['signals_found']}
- B:@KB> ?>78F89: {scan_result['positions_opened']}
+📊 Signals found: {scan_result['signals_found']}
+✅ Positions opened: {scan_result['positions_opened']}
 """
         if scan_result.get('positions_opened', 0) > 0:
-            message += "\n=� >2K5 ?>78F88:\n"
+            message += "\n🟢 New positions:\n"
             for pos in scan_result.get('opened_positions', []):
-                message += f"" {pos['symbol']} @ {pos['entry_price']:.4f}\n"
+                message += f"  {pos['symbol']} @ {pos['entry_price']:.4f}\n"
 
         await self.send_message(message)
 
     async def notify_error(self, error_message: str):
         """Send error notification."""
         message = f"""
-L *H81:0*
+❌ *Error*
 
 {error_message}
 """
