@@ -1,0 +1,257 @@
+"""Position management."""
+import logging
+from typing import Dict, List, Optional
+from sqlalchemy.orm import Session
+
+from ..database.repository import PositionRepository, SettingsRepository, BotStatusRepository
+from ..exchange.binance_client import BinanceClient
+from ..config import TradingConfig
+
+logger = logging.getLogger(__name__)
+
+
+class PositionManager:
+    """Manages trading positions."""
+
+    def __init__(self, session: Session, client: BinanceClient, config: TradingConfig):
+        self.session = session
+        self.client = client
+        self.config = config
+        self.position_repo = PositionRepository(session)
+        self.settings_repo = SettingsRepository(session)
+        self.bot_status_repo = BotStatusRepository(session)
+
+    def get_take_profit_pct(self) -> float:
+        """Get take profit percentage from settings."""
+        return self.settings_repo.get_float('take_profit_pct', self.config.take_profit_pct)
+
+    def calculate_take_profit_price(self, entry_price: float) -> float:
+        """Calculate take profit price for short position.
+
+        For short: TP price = entry price * (1 - TP_pct/100)
+        Example: Entry at 100, TP 5% -> TP price = 100 * 0.95 = 95
+        """
+        tp_pct = self.get_take_profit_pct()
+        tp_price = entry_price * (1 - tp_pct / 100)
+        return tp_price
+
+    def open_position(self, symbol: str, margin: float, leverage: int) -> Optional[Dict]:
+        """Open a new short position.
+
+        Args:
+            symbol: Trading symbol
+            margin: Margin in USDT
+            leverage: Leverage to use
+
+        Returns: Dict with position info or None if failed
+        """
+        try:
+            logger.info(f"Opening position: {symbol}, Margin={margin}, Leverage={leverage}x")
+
+            # Open short position on exchange
+            order = self.client.open_short_position(symbol, margin, leverage)
+
+            if not order:
+                logger.error(f"Failed to open position for {symbol}")
+                return None
+
+            # Get entry price from order
+            entry_price = float(order.get('average', 0) or order.get('price', 0))
+            if entry_price == 0:
+                # Fallback to current price if order doesn't have price
+                ticker = self.client.get_ticker(symbol)
+                entry_price = ticker['last'] if ticker else 0
+
+            if entry_price == 0:
+                logger.error(f"Could not determine entry price for {symbol}")
+                return None
+
+            # Calculate quantity from order
+            quantity = float(order.get('filled', 0) or order.get('amount', 0))
+
+            # Calculate take profit price
+            tp_price = self.calculate_take_profit_price(entry_price)
+
+            # Save position to database
+            position = self.position_repo.create(
+                symbol=symbol,
+                entry_price=entry_price,
+                quantity=quantity,
+                margin=margin,
+                leverage=leverage,
+                take_profit_price=tp_price,
+                order_id=order.get('id')
+            )
+
+            # Update bot statistics
+            self.bot_status_repo.increment_opened()
+
+            logger.info(
+                f"Position opened: {symbol}, "
+                f"Entry={entry_price:.4f}, "
+                f"Quantity={quantity:.8f}, "
+                f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%)"
+            )
+
+            return {
+                'position_id': position.id,
+                'symbol': symbol,
+                'entry_price': entry_price,
+                'quantity': quantity,
+                'margin': margin,
+                'leverage': leverage,
+                'take_profit_price': tp_price,
+                'order_id': order.get('id')
+            }
+
+        except Exception as e:
+            logger.error(f"Error opening position for {symbol}: {e}")
+            return None
+
+    def close_position(self, position_id: int, reason: str = 'take_profit') -> Optional[Dict]:
+        """Close an open position.
+
+        Args:
+            position_id: Position ID in database
+            reason: Reason for closing ('take_profit', 'stop_loss', 'manual')
+
+        Returns: Dict with close info or None if failed
+        """
+        try:
+            position = self.position_repo.get(position_id)
+            if not position:
+                logger.error(f"Position {position_id} not found")
+                return None
+
+            if position.status != 'open':
+                logger.warning(f"Position {position_id} is not open: {position.status}")
+                return None
+
+            logger.info(f"Closing position {position_id}: {position.symbol}, Reason={reason}")
+
+            # Close position on exchange
+            order = self.client.close_short_position(position.symbol, position.quantity)
+
+            if not order:
+                logger.error(f"Failed to close position {position_id}")
+                return None
+
+            # Get exit price from order
+            exit_price = float(order.get('average', 0) or order.get('price', 0))
+            if exit_price == 0:
+                # Fallback to current price
+                ticker = self.client.get_ticker(position.symbol)
+                exit_price = ticker['last'] if ticker else position.current_price
+
+            # Close position in database
+            closed_position = self.position_repo.close(position_id, exit_price, reason)
+
+            # Update bot statistics
+            self.bot_status_repo.increment_closed(closed_position.pnl)
+
+            logger.info(
+                f"Position closed: {position.symbol}, "
+                f"Entry={position.entry_price:.4f}, "
+                f"Exit={exit_price:.4f}, "
+                f"P&L={closed_position.pnl:.2f} USDT ({closed_position.pnl_pct:.2f}%)"
+            )
+
+            return {
+                'position_id': position_id,
+                'symbol': position.symbol,
+                'entry_price': position.entry_price,
+                'exit_price': exit_price,
+                'pnl': closed_position.pnl,
+                'pnl_pct': closed_position.pnl_pct,
+                'reason': reason
+            }
+
+        except Exception as e:
+            logger.error(f"Error closing position {position_id}: {e}")
+            return None
+
+    def monitor_positions(self) -> List[Dict]:
+        """Monitor all open positions and close if TP is reached.
+
+        Returns: List of closed positions
+        """
+        open_positions = self.position_repo.get_all_open()
+
+        if not open_positions:
+            return []
+
+        logger.debug(f"Monitoring {len(open_positions)} open positions")
+        closed = []
+
+        for position in open_positions:
+            try:
+                # Get current price
+                ticker = self.client.get_ticker(position.symbol)
+                if not ticker:
+                    logger.warning(f"Could not get ticker for {position.symbol}")
+                    continue
+
+                current_price = ticker['last']
+
+                # Update current price in database
+                self.position_repo.update_current_price(position.id, current_price)
+
+                # Check if take profit is reached
+                # For short position: close when price <= TP price
+                if current_price <= position.take_profit_price:
+                    logger.info(
+                        f"Take profit reached for {position.symbol}: "
+                        f"Current={current_price:.4f}, TP={position.take_profit_price:.4f}"
+                    )
+
+                    close_info = self.close_position(position.id, 'take_profit')
+                    if close_info:
+                        closed.append(close_info)
+
+            except Exception as e:
+                logger.error(f"Error monitoring position {position.id} ({position.symbol}): {e}")
+
+        if closed:
+            logger.info(f"Closed {len(closed)} positions in this monitoring cycle")
+
+        return closed
+
+    def get_all_open_positions(self) -> List[Dict]:
+        """Get all open positions with current prices."""
+        positions = self.position_repo.get_all_open()
+        result = []
+
+        for pos in positions:
+            # Calculate unrealized P&L
+            if pos.current_price and pos.entry_price:
+                # For short: P&L = (entry - current) * quantity
+                unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
+                unrealized_pnl_pct = ((pos.entry_price - pos.current_price) / pos.entry_price) * 100
+            else:
+                unrealized_pnl = 0
+                unrealized_pnl_pct = 0
+
+            result.append({
+                'id': pos.id,
+                'symbol': pos.symbol,
+                'entry_price': pos.entry_price,
+                'current_price': pos.current_price,
+                'quantity': pos.quantity,
+                'margin': pos.margin,
+                'leverage': pos.leverage,
+                'take_profit_price': pos.take_profit_price,
+                'unrealized_pnl': round(unrealized_pnl, 2),
+                'unrealized_pnl_pct': round(unrealized_pnl_pct, 2),
+                'opened_at': pos.opened_at.isoformat() if pos.opened_at else None
+            })
+
+        return result
+
+    def close_position_by_symbol(self, symbol: str, reason: str = 'manual') -> Optional[Dict]:
+        """Close position by symbol."""
+        position = self.position_repo.get_by_symbol(symbol)
+        if not position:
+            logger.warning(f"No open position found for {symbol}")
+            return None
+
+        return self.close_position(position.id, reason)
