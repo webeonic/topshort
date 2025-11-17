@@ -130,10 +130,10 @@ class TopShortBot:
 
         # Send startup notification
         await self.telegram_bot.send_message(
-            "=€ *TopShort Bot 70?CI5=*\n\n"
+            "ðŸš€ *TopShort Bot started*\n\n"
             f"Testnet: {self.config.binance.testnet}\n"
-            f"!:0=8@>20=85: :064K5 {self.config.scheduler.scan_interval_minutes} <8=\n"
-            f">=8B>@8=3: :064K5 {self.config.scheduler.monitor_interval_seconds} A5:"
+            f"Scan interval: every {self.config.scheduler.scan_interval_minutes} min\n"
+            f"Monitor interval: every {self.config.scheduler.monitor_interval_seconds} sec"
         )
 
         # Start scheduler
@@ -161,7 +161,7 @@ class TopShortBot:
 
         # Send shutdown notification
         try:
-            await self.telegram_bot.send_message("=Ñ *TopShort Bot >AB0=>2;5=*")
+            await self.telegram_bot.send_message("ðŸ›‘ *TopShort Bot stopped*")
         except:
             pass
 
