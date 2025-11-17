@@ -1,5 +1,6 @@
 """Trading engine - main trading logic coordinator."""
 import logging
+import threading
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,11 @@ class TradingEngine:
         self.settings_repo = SettingsRepository(session)
         self.signal_repo = MarketSignalRepository(session)
 
+        # Thread safety - locks for preventing race conditions
+        self._position_locks: Dict[str, threading.Lock] = {}
+        self._global_lock = threading.Lock()
+        self._lock_timeout = 5.0  # seconds
+
     def get_default_leverage(self) -> int:
         """Get default leverage from settings."""
         return self.settings_repo.get_int('default_leverage', self.config.trading.default_leverage)
@@ -39,6 +45,13 @@ class TradingEngine:
     def get_margin_per_trade(self) -> float:
         """Get margin per trade from settings."""
         return self.settings_repo.get_float('margin_per_trade', self.config.trading.margin_per_trade)
+
+    def _get_symbol_lock(self, symbol: str) -> threading.Lock:
+        """Get or create a lock for the given symbol."""
+        with self._global_lock:
+            if symbol not in self._position_locks:
+                self._position_locks[symbol] = threading.Lock()
+            return self._position_locks[symbol]
 
     def execute_scan_and_trade(self, max_signals: int = 30) -> Dict:
         """Execute market scan and open positions.
@@ -109,22 +122,35 @@ class TradingEngine:
                 logger.info("Reached maximum position limit")
                 break
 
-            # Risk check
-            risk_check = self.risk_manager.check_before_trade(symbol, margin_per_trade, leverage)
+            # Get symbol-specific lock
+            symbol_lock = self._get_symbol_lock(symbol)
 
-            if not risk_check['approved']:
-                logger.info(f"Trade not approved for {symbol}: {risk_check['reason']}")
+            # Try to acquire lock (non-blocking)
+            if not symbol_lock.acquire(blocking=False):
+                logger.info(f"Skipping {symbol} - already being processed by another thread")
                 continue
 
-            # Open position
-            logger.info(f"Opening position for {symbol} (Score: {signal['score']:.2f})")
-            position_info = self.position_manager.open_position(symbol, margin_per_trade, leverage)
+            try:
+                # Risk check (within lock)
+                risk_check = self.risk_manager.check_before_trade(symbol, margin_per_trade, leverage)
 
-            if position_info:
-                positions_opened.append(position_info)
-                logger.info(f" Position opened for {symbol}")
-            else:
-                logger.error(f" Failed to open position for {symbol}")
+                if not risk_check['approved']:
+                    logger.info(f"Trade not approved for {symbol}: {risk_check['reason']}")
+                    continue
+
+                # Open position (within lock)
+                logger.info(f"Opening position for {symbol} (Score: {signal['score']:.2f})")
+                position_info = self.position_manager.open_position(symbol, margin_per_trade, leverage)
+
+                if position_info:
+                    positions_opened.append(position_info)
+                    logger.info(f"✓ Position opened for {symbol}")
+                else:
+                    logger.error(f"✗ Failed to open position for {symbol}")
+
+            finally:
+                # Always release the lock
+                symbol_lock.release()
 
         logger.info(
             f"Scan and trade cycle completed: "

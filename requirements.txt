@@ -27,3 +27,8 @@ colorlog==6.9.0
 pytest==8.3.4
 pytest-asyncio==0.24.0
 pytest-mock==3.14.0
+
+# Reliability and Security
+tenacity==8.2.3
+pybreaker==1.0.2
+cryptography==42.0.5

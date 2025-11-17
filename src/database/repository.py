@@ -1,10 +1,14 @@
 """Database repository for CRUD operations."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
+from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_
+import logging
 
 from .models import Settings, Position, TradeHistory, MarketSignal, BotStatus
+
+logger = logging.getLogger(__name__)
 
 
 class SettingsRepository:
@@ -106,17 +110,22 @@ class PositionRepository:
         if not position:
             raise ValueError(f"Position {position_id} not found")
 
-        # Calculate P&L for short position
+        # Calculate P&L for short position using Decimal for precision
         # P&L = (entry_price - exit_price) * quantity
-        pnl = (position.entry_price - exit_price) * position.quantity
-        pnl_pct = ((position.entry_price - exit_price) / position.entry_price) * 100
+        entry = Decimal(str(position.entry_price))
+        exit_p = Decimal(str(exit_price))
+        qty = Decimal(str(position.quantity))
 
-        # Update position
+        # Calculate P&L with proper rounding
+        pnl = ((entry - exit_p) * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        pnl_pct = (((entry - exit_p) / entry) * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        # Update position (convert back to float for database storage)
         position.status = 'closed'
         position.closed_at = datetime.utcnow()
         position.current_price = exit_price
-        position.pnl = pnl
-        position.pnl_pct = pnl_pct
+        position.pnl = float(pnl)
+        position.pnl_pct = float(pnl_pct)
 
         # Create history record
         history = TradeHistory(
@@ -236,6 +245,16 @@ class MarketSignalRepository:
         return self.session.query(MarketSignal).order_by(
             desc(MarketSignal.created_at)
         ).limit(limit).all()
+
+    def cleanup_old_signals(self, retention_days: int = 30) -> int:
+        """Delete signals older than retention period."""
+        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+        deleted = self.session.query(MarketSignal).filter(
+            MarketSignal.created_at < cutoff
+        ).delete()
+        self.session.commit()
+        logger.info(f"Cleaned up {deleted} old market signals (older than {retention_days} days)")
+        return deleted
 
 
 class BotStatusRepository:

@@ -68,6 +68,7 @@ class TopShortBot:
         self.telegram_bot = None
         self.scheduler = None
         self.logger = logging.getLogger(__name__)
+        self.shutdown_event = None
 
     def initialize(self):
         """Initialize all components."""
@@ -186,24 +187,40 @@ class TopShortBot:
             sys.exit(1)
 
     async def _run_with_signals(self):
-        """Run the bot with proper signal handling."""
-        # Setup signal handlers for graceful shutdown
+        """Run the bot with proper signal handling using Event."""
+        # Create shutdown event
+        self.shutdown_event = asyncio.Event()
         loop = asyncio.get_running_loop()
 
         def signal_handler():
-            self.logger.info("Received shutdown signal, stopping...")
-            asyncio.create_task(self.stop())
+            self.logger.info("Received shutdown signal, initiating graceful shutdown...")
+            # Set the event (thread-safe way to signal shutdown)
+            loop.call_soon_threadsafe(self.shutdown_event.set)
 
         # Register signal handlers
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, signal_handler)
 
         try:
-            await self.start()
+            # Start bot in background
+            start_task = asyncio.create_task(self.start())
+
+            # Wait for shutdown signal
+            await self.shutdown_event.wait()
+
+            # Stop the bot
+            self.logger.info("Shutdown event received, stopping bot...")
+            await self.stop()
+
+        except Exception as e:
+            self.logger.error(f"Error during shutdown: {e}", exc_info=True)
         finally:
             # Cleanup signal handlers
             for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.remove_signal_handler(sig)
+                try:
+                    loop.remove_signal_handler(sig)
+                except:
+                    pass
 
 
 def main():

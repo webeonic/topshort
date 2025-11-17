@@ -3,8 +3,17 @@ import ccxt
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from pybreaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
+
+# Circuit breaker configuration
+api_circuit_breaker = CircuitBreaker(
+    fail_max=5,
+    timeout_duration=60,
+    name='binance_api'
+)
 
 
 class BinanceClient:
@@ -26,6 +35,26 @@ class BinanceClient:
             logger.info("Binance client initialized in TESTNET mode")
         else:
             logger.info("Binance client initialized in LIVE mode")
+
+        # Set position mode to hedge mode for short positions
+        self._set_hedge_mode()
+
+    def _set_hedge_mode(self) -> bool:
+        """Set position mode to hedge mode.
+
+        This allows holding both LONG and SHORT positions simultaneously.
+        Required for proper position side handling.
+        """
+        try:
+            response = self.exchange.fapiPrivatePostPositionSideDual({
+                'dualSidePosition': 'true'
+            })
+            logger.info("Position mode set to HEDGE mode")
+            return True
+        except Exception as e:
+            # If already in hedge mode, this will error but that's okay
+            logger.warning(f"Could not set hedge mode (might already be set): {e}")
+            return False
 
     def load_markets(self) -> Dict[str, Any]:
         """Load all available markets."""
@@ -55,6 +84,13 @@ class BinanceClient:
             logger.error(f"Error getting USDT perpetual symbols: {e}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(ccxt.RateLimitExceeded),
+        reraise=True
+    )
+    @api_circuit_breaker
     def get_ohlcv(self, symbol: str, timeframe: str = '1h', limit: int = 100) -> List[List]:
         """Get OHLCV data for a symbol.
 
@@ -63,18 +99,64 @@ class BinanceClient:
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             return ohlcv
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"Rate limit hit for {symbol}, retrying...")
+            raise
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {symbol}: {e}")
             return []
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(ccxt.RateLimitExceeded),
+        reraise=True
+    )
+    @api_circuit_breaker
     def get_ticker(self, symbol: str) -> Optional[Dict]:
         """Get current ticker for a symbol."""
         try:
             ticker = self.exchange.fetch_ticker(symbol)
             return ticker
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"Rate limit hit for {symbol}, retrying...")
+            raise
         except Exception as e:
             logger.error(f"Error fetching ticker for {symbol}: {e}")
             return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(ccxt.RateLimitExceeded),
+        reraise=True
+    )
+    @api_circuit_breaker
+    def fetch_tickers(self, symbols: List[str]) -> Dict[str, Dict]:
+        """Fetch tickers for multiple symbols in a single API call.
+
+        Args:
+            symbols: List of trading symbols
+
+        Returns: Dict mapping symbol to ticker data
+        """
+        try:
+            # ccxt supports batch ticker fetching
+            tickers = self.exchange.fetch_tickers(symbols)
+            logger.debug(f"Fetched {len(tickers)} tickers in batch")
+            return tickers
+        except ccxt.RateLimitExceeded as e:
+            logger.warning(f"Rate limit hit for batch tickers, retrying...")
+            raise
+        except Exception as e:
+            logger.error(f"Error batch fetching tickers: {e}")
+            # Fallback to individual requests
+            result = {}
+            for symbol in symbols:
+                ticker = self.get_ticker(symbol)
+                if ticker:
+                    result[symbol] = ticker
+            return result
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Set leverage for a symbol."""
@@ -90,20 +172,26 @@ class BinanceClient:
             logger.error(f"Error setting leverage for {symbol}: {e}")
             return False
 
-    def create_market_order(self, symbol: str, side: str, quantity: float) -> Optional[Dict]:
+    def create_market_order(self, symbol: str, side: str, quantity: float, position_side: Optional[str] = None) -> Optional[Dict]:
         """Create market order.
 
         Args:
             symbol: Trading symbol (e.g., 'BTC/USDT:USDT')
             side: 'buy' or 'sell'
             quantity: Amount in base currency
+            position_side: 'LONG' or 'SHORT' (required in hedge mode)
         """
         try:
+            params = {}
+            if position_side:
+                params['positionSide'] = position_side
+
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side=side,
-                amount=quantity
+                amount=quantity,
+                params=params
             )
             logger.info(f"Created market {side} order for {quantity} {symbol}: {order.get('id')}")
             return order
@@ -111,7 +199,7 @@ class BinanceClient:
             logger.error(f"Error creating market order for {symbol}: {e}")
             return None
 
-    def create_limit_order(self, symbol: str, side: str, quantity: float, price: float) -> Optional[Dict]:
+    def create_limit_order(self, symbol: str, side: str, quantity: float, price: float, position_side: Optional[str] = None) -> Optional[Dict]:
         """Create limit order.
 
         Args:
@@ -119,14 +207,20 @@ class BinanceClient:
             side: 'buy' or 'sell'
             quantity: Amount in base currency
             price: Limit price
+            position_side: 'LONG' or 'SHORT' (required in hedge mode)
         """
         try:
+            params = {}
+            if position_side:
+                params['positionSide'] = position_side
+
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='limit',
                 side=side,
                 amount=quantity,
-                price=price
+                price=price,
+                params=params
             )
             logger.info(f"Created limit {side} order for {quantity} {symbol} @ {price}")
             return order
@@ -175,8 +269,8 @@ class BinanceClient:
                 f"Quantity: {quantity}"
             )
 
-            # Create sell market order to open short
-            order = self.create_market_order(symbol, 'sell', float(quantity))
+            # Create sell market order to open short (with SHORT position side for hedge mode)
+            order = self.create_market_order(symbol, 'sell', float(quantity), position_side='SHORT')
             return order
 
         except Exception as e:
@@ -193,8 +287,8 @@ class BinanceClient:
         Returns: Order info or None
         """
         try:
-            # Create buy market order to close short
-            order = self.create_market_order(symbol, 'buy', quantity)
+            # Create buy market order to close short (with SHORT position side for hedge mode)
+            order = self.create_market_order(symbol, 'buy', quantity, position_side='SHORT')
             logger.info(f"Closed short position: {symbol}, Quantity: {quantity}")
             return order
         except Exception as e:

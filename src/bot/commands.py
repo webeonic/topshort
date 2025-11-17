@@ -1,5 +1,7 @@
 """Telegram bot command handlers."""
+import os
 import logging
+from functools import wraps
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -10,6 +12,127 @@ from ..database.repository import (
 from ..trading.engine import TradingEngine
 
 logger = logging.getLogger(__name__)
+
+# Load authorized users from environment
+AUTHORIZED_USERS = set(
+    user_id.strip()
+    for user_id in os.getenv('TELEGRAM_AUTHORIZED_USERS', '').split(',')
+    if user_id.strip()
+)
+
+
+class AuditLogger:
+    """Audit logger for security-relevant events."""
+
+    @staticmethod
+    def log_security_event(user_id: int, username: str, action: str, details: dict = None):
+        """Log security-relevant events."""
+        import json
+        details_str = json.dumps(details) if details else '{}'
+        logger.warning(
+            f"SECURITY_EVENT: user_id={user_id}, username={username}, "
+            f"action={action}, details={details_str}"
+        )
+
+
+audit = AuditLogger()
+
+# Allowed settings with their types and valid ranges
+ALLOWED_SETTINGS = {
+    'margin_per_trade': {
+        'type': float,
+        'min': 1.0,
+        'max': 10000.0,
+        'description': 'Margin per trade in USDT'
+    },
+    'max_positions': {
+        'type': int,
+        'min': 1,
+        'max': 50,
+        'description': 'Maximum number of simultaneous positions'
+    },
+    'max_total_margin': {
+        'type': float,
+        'min': 10.0,
+        'max': 100000.0,
+        'description': 'Maximum total margin in USDT'
+    },
+    'default_leverage': {
+        'type': int,
+        'min': 1,
+        'max': 125,
+        'description': 'Default leverage for positions'
+    },
+    'take_profit_pct': {
+        'type': float,
+        'min': 0.1,
+        'max': 50.0,
+        'description': 'Take profit percentage'
+    },
+    'pump_threshold_pct': {
+        'type': float,
+        'min': 10.0,
+        'max': 200.0,
+        'description': 'Minimum pump percentage to trigger signal'
+    },
+    'pump_period_hours_min': {
+        'type': int,
+        'min': 1,
+        'max': 168,
+        'description': 'Minimum hours for pump period'
+    },
+    'pump_period_hours_max': {
+        'type': int,
+        'min': 1,
+        'max': 168,
+        'description': 'Maximum hours for pump period'
+    },
+    'cooldown_period_hours_min': {
+        'type': int,
+        'min': 1,
+        'max': 48,
+        'description': 'Minimum hours for cooldown period'
+    },
+    'cooldown_period_hours_max': {
+        'type': int,
+        'min': 1,
+        'max': 48,
+        'description': 'Maximum hours for cooldown period'
+    },
+    'volume_decrease_threshold_pct': {
+        'type': float,
+        'min': 0.0,
+        'max': 100.0,
+        'description': 'Volume decrease threshold percentage'
+    }
+}
+
+
+def require_auth(func):
+    """Decorator to require authentication for sensitive commands."""
+    @wraps(func)
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = str(update.effective_user.id)
+        username = update.effective_user.username or 'unknown'
+
+        if not AUTHORIZED_USERS or user_id not in AUTHORIZED_USERS:
+            logger.warning(
+                f"SECURITY: Unauthorized access attempt - "
+                f"User ID: {user_id}, Username: @{username}, "
+                f"Command: {func.__name__}"
+            )
+            await update.message.reply_text(
+                "❌ *Access Denied*\n\n"
+                "You are not authorized to use this command.\n"
+                "Contact the administrator if you need access.",
+                parse_mode='Markdown'
+            )
+            return
+
+        logger.info(f"Authorized command: {func.__name__} by user {user_id} (@{username})")
+        return await func(self, update, context)
+
+    return wrapper
 
 
 class BotCommands:
@@ -186,27 +309,78 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in settings command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
+    @require_auth
     async def set_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /set command."""
         try:
             if len(context.args) < 2:
                 await update.message.reply_text(
                     "Usage: /set <key> <value>\n"
-                    "Example: /set margin_per_trade 150"
+                    "Example: /set margin_per_trade 150\n\n"
+                    "Available settings:\n" +
+                    "\n".join(f"  • {k}: {v['description']}" for k, v in ALLOWED_SETTINGS.items())
                 )
                 return
 
             key = context.args[0]
-            value = context.args[1]
+            value_str = context.args[1]
 
-            self.settings_repo.set(key, value)
+            # Validate key
+            if key not in ALLOWED_SETTINGS:
+                await update.message.reply_text(
+                    f"❌ Invalid setting key: *{key}*\n\n"
+                    "Available settings:\n" +
+                    "\n".join(f"  • {k}" for k in ALLOWED_SETTINGS.keys()),
+                    parse_mode='Markdown'
+                )
+                return
 
-            await update.message.reply_text(f"✅ Setting {key} = {value}")
+            setting_config = ALLOWED_SETTINGS[key]
+            expected_type = setting_config['type']
+            min_val = setting_config['min']
+            max_val = setting_config['max']
+
+            # Validate type and range
+            try:
+                typed_value = expected_type(value_str)
+
+                if not (min_val <= typed_value <= max_val):
+                    await update.message.reply_text(
+                        f"❌ Value out of range for *{key}*\n\n"
+                        f"Value must be between {min_val} and {max_val}\n"
+                        f"You provided: {typed_value}",
+                        parse_mode='Markdown'
+                    )
+                    return
+
+                # Save validated setting
+                self.settings_repo.set(key, str(typed_value), setting_config['description'])
+
+                await update.message.reply_text(
+                    f"✅ Setting updated successfully\n\n"
+                    f"*{key}* = {typed_value}\n"
+                    f"_{setting_config['description']}_",
+                    parse_mode='Markdown'
+                )
+
+                logger.info(
+                    f"Setting updated: {key}={typed_value} by user {update.effective_user.id}"
+                )
+
+            except (ValueError, TypeError) as e:
+                await update.message.reply_text(
+                    f"❌ Invalid value type for *{key}*\n\n"
+                    f"Expected: {expected_type.__name__}\n"
+                    f"You provided: {value_str}\n"
+                    f"Error: {str(e)}",
+                    parse_mode='Markdown'
+                )
 
         except Exception as e:
             logger.error(f"Error in set command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
+    @require_auth
     async def pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pause command."""
         try:
@@ -217,6 +391,7 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in pause command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
+    @require_auth
     async def resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /resume command."""
         try:
@@ -227,6 +402,7 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in resume command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
+    @require_auth
     async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scan command."""
         try:
@@ -246,6 +422,7 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in scan command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
+    @require_auth
     async def close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /close command."""
         try:
@@ -274,9 +451,18 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in close command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")
 
+    @require_auth
     async def closeall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /closeall command."""
         try:
+            # Audit log
+            audit.log_security_event(
+                update.effective_user.id,
+                update.effective_user.username or 'unknown',
+                'CLOSE_ALL_POSITIONS',
+                {}
+            )
+
             await update.message.reply_text("🔄 Closing all positions...")
 
             result = self.engine.close_all_positions('manual')

@@ -1,6 +1,7 @@
 """Position management."""
 import logging
 from typing import Dict, List, Optional
+from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy.orm import Session
 
 from ..database.repository import PositionRepository, SettingsRepository, BotStatusRepository
@@ -32,8 +33,13 @@ class PositionManager:
         Example: Entry at 100, TP 5% -> TP price = 100 * 0.95 = 95
         """
         tp_pct = self.get_take_profit_pct()
-        tp_price = entry_price * (1 - tp_pct / 100)
-        return tp_price
+
+        # Use Decimal for precise calculation
+        entry = Decimal(str(entry_price))
+        tp_percent = Decimal(str(tp_pct))
+        tp_price = (entry * (1 - tp_percent / 100)).quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP)
+
+        return float(tp_price)
 
     def open_position(self, symbol: str, margin: float, leverage: int) -> Optional[Dict]:
         """Open a new short position.
@@ -45,6 +51,7 @@ class PositionManager:
 
         Returns: Dict with position info or None if failed
         """
+        order = None
         try:
             logger.info(f"Opening position: {symbol}, Margin={margin}, Leverage={leverage}x")
 
@@ -64,6 +71,15 @@ class PositionManager:
 
             if entry_price == 0:
                 logger.error(f"Could not determine entry price for {symbol}")
+                # Try to close orphaned exchange position
+                if order:
+                    quantity = float(order.get('filled', 0) or order.get('amount', 0))
+                    if quantity > 0:
+                        try:
+                            self.client.close_short_position(symbol, quantity)
+                            logger.info(f"Closed orphaned position for {symbol}")
+                        except:
+                            logger.error(f"Failed to close orphaned position for {symbol}")
                 return None
 
             # Calculate quantity from order
@@ -72,40 +88,72 @@ class PositionManager:
             # Calculate take profit price
             tp_price = self.calculate_take_profit_price(entry_price)
 
-            # Save position to database
-            position = self.position_repo.create(
-                symbol=symbol,
-                entry_price=entry_price,
-                quantity=quantity,
-                margin=margin,
-                leverage=leverage,
-                take_profit_price=tp_price,
-                order_id=order.get('id')
-            )
+            # Begin nested transaction for database operations
+            self.session.begin_nested()
 
-            # Update bot statistics
-            self.bot_status_repo.increment_opened()
+            try:
+                # Save position to database
+                position = self.position_repo.create(
+                    symbol=symbol,
+                    entry_price=entry_price,
+                    quantity=quantity,
+                    margin=margin,
+                    leverage=leverage,
+                    take_profit_price=tp_price,
+                    order_id=order.get('id')
+                )
 
-            logger.info(
-                f"Position opened: {symbol}, "
-                f"Entry={entry_price:.4f}, "
-                f"Quantity={quantity:.8f}, "
-                f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%)"
-            )
+                # Update bot statistics
+                self.bot_status_repo.increment_opened()
 
-            return {
-                'position_id': position.id,
-                'symbol': symbol,
-                'entry_price': entry_price,
-                'quantity': quantity,
-                'margin': margin,
-                'leverage': leverage,
-                'take_profit_price': tp_price,
-                'order_id': order.get('id')
-            }
+                # Commit transaction
+                self.session.commit()
+
+                logger.info(
+                    f"Position opened: {symbol}, "
+                    f"Entry={entry_price:.4f}, "
+                    f"Quantity={quantity:.8f}, "
+                    f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%)"
+                )
+
+                return {
+                    'position_id': position.id,
+                    'symbol': symbol,
+                    'entry_price': entry_price,
+                    'quantity': quantity,
+                    'margin': margin,
+                    'leverage': leverage,
+                    'take_profit_price': tp_price,
+                    'order_id': order.get('id')
+                }
+
+            except Exception as db_error:
+                # Rollback database transaction
+                self.session.rollback()
+                logger.error(f"Database error, rolling back: {db_error}")
+
+                # Try to close orphaned exchange position
+                try:
+                    self.client.close_short_position(symbol, quantity)
+                    logger.info(f"Closed orphaned position after DB error for {symbol}")
+                except:
+                    logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
+
+                return None
 
         except Exception as e:
             logger.error(f"Error opening position for {symbol}: {e}")
+
+            # Try to close orphaned exchange position
+            if order:
+                try:
+                    quantity = float(order.get('filled', 0) or order.get('amount', 0))
+                    if quantity > 0:
+                        self.client.close_short_position(symbol, quantity)
+                        logger.info(f"Closed orphaned position after error for {symbol}")
+                except:
+                    logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
+
             return None
 
     def close_position(self, position_id: int, reason: str = 'take_profit') -> Optional[Dict]:
@@ -183,10 +231,16 @@ class PositionManager:
         logger.debug(f"Monitoring {len(open_positions)} open positions")
         closed = []
 
+        # Get all symbols for batch ticker fetch
+        symbols = [pos.symbol for pos in open_positions]
+
+        # Batch fetch all tickers (single API call instead of N calls)
+        tickers = self.client.fetch_tickers(symbols)
+
         for position in open_positions:
             try:
-                # Get current price
-                ticker = self.client.get_ticker(position.symbol)
+                # Get ticker from batch results
+                ticker = tickers.get(position.symbol)
                 if not ticker:
                     logger.warning(f"Could not get ticker for {position.symbol}")
                     continue
@@ -222,11 +276,15 @@ class PositionManager:
         result = []
 
         for pos in positions:
-            # Calculate unrealized P&L
+            # Calculate unrealized P&L using Decimal for precision
             if pos.current_price and pos.entry_price:
                 # For short: P&L = (entry - current) * quantity
-                unrealized_pnl = (pos.entry_price - pos.current_price) * pos.quantity
-                unrealized_pnl_pct = ((pos.entry_price - pos.current_price) / pos.entry_price) * 100
+                entry = Decimal(str(pos.entry_price))
+                current = Decimal(str(pos.current_price))
+                qty = Decimal(str(pos.quantity))
+
+                unrealized_pnl = float(((entry - current) * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+                unrealized_pnl_pct = float((((entry - current) / entry) * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
             else:
                 unrealized_pnl = 0
                 unrealized_pnl_pct = 0

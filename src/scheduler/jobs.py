@@ -3,9 +3,10 @@ import logging
 import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 
-from ..database.repository import BotStatusRepository
+from ..database.repository import BotStatusRepository, MarketSignalRepository
 from ..trading.engine import TradingEngine
 from ..bot.telegram_bot import TelegramBot
 
@@ -21,6 +22,7 @@ class SchedulerJobs:
         self.telegram_bot = telegram_bot
         self.config = config
         self.bot_status_repo = BotStatusRepository(session)
+        self.signal_repo = MarketSignalRepository(session)
         self.scheduler = AsyncIOScheduler()
 
     async def scan_and_trade_job(self):
@@ -82,6 +84,19 @@ class SchedulerJobs:
         except Exception as e:
             logger.error(f"Error in monitor_positions_job: {e}", exc_info=True)
 
+    async def cleanup_data_job(self):
+        """Scheduled job to cleanup old data."""
+        try:
+            logger.info("Running data cleanup job...")
+
+            # Cleanup old market signals (older than 30 days)
+            deleted_signals = self.signal_repo.cleanup_old_signals(retention_days=30)
+
+            logger.info(f"Data cleanup completed: {deleted_signals} old signals removed")
+
+        except Exception as e:
+            logger.error(f"Error in cleanup_data_job: {e}", exc_info=True)
+
     def start(self):
         """Start scheduler with configured jobs."""
         logger.info("Starting scheduler")
@@ -109,6 +124,16 @@ class SchedulerJobs:
             max_instances=1,
         )
         logger.info(f"Scheduled monitor_positions job: every {monitor_interval_seconds} seconds")
+
+        # Job 3: Cleanup old data (daily at 2 AM)
+        self.scheduler.add_job(
+            self.cleanup_data_job,
+            trigger=CronTrigger(hour=2, minute=0),
+            id='cleanup_data',
+            name='Cleanup Old Data',
+            replace_existing=True,
+        )
+        logger.info("Scheduled cleanup_data job: daily at 2:00 AM")
 
         # Start scheduler
         self.scheduler.start()
