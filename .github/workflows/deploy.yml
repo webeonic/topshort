@@ -1,0 +1,72 @@
+name: Deploy to Digital Ocean
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+
+      - name: Add Digital Ocean to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Digital Ocean
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh $DO_USER@$DO_HOST << 'ENDSSH'
+            cd /opt/topshort
+
+            # Pull latest code
+            git pull origin main
+
+            # Stop running container
+            docker-compose down
+
+            # Rebuild and start
+            docker-compose build --no-cache
+            docker-compose up -d
+
+            # Clean up old images
+            docker image prune -f
+
+            # Show status
+            docker-compose ps
+            docker-compose logs --tail=50
+          ENDSSH
+
+      - name: Verify deployment
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh $DO_USER@$DO_HOST << 'ENDSSH'
+            cd /opt/topshort
+
+            # Wait for container to be healthy
+            sleep 10
+
+            # Check container status
+            if docker-compose ps | grep -q "Up"; then
+              echo "✅ Deployment successful"
+              exit 0
+            else
+              echo "❌ Deployment failed"
+              docker-compose logs --tail=100
+              exit 1
+            fi
+          ENDSSH
