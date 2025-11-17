@@ -206,7 +206,7 @@ class MarketSignalRepository:
     def create(self, symbol: str, signal_type: str, price: float,
                volume_24h: Optional[float] = None, price_change_pct: Optional[float] = None,
                volume_change_pct: Optional[float] = None, score: Optional[float] = None,
-               metadata: Optional[str] = None) -> MarketSignal:
+               signal_metadata: Optional[str] = None) -> MarketSignal:
         """Create new market signal."""
         signal = MarketSignal(
             symbol=symbol,
@@ -216,7 +216,7 @@ class MarketSignalRepository:
             price_change_pct=price_change_pct,
             volume_change_pct=volume_change_pct,
             score=score,
-            metadata=metadata,
+            signal_metadata=signal_metadata,
             created_at=datetime.utcnow(),
             action_taken=False
         )

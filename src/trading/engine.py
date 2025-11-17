@@ -91,7 +91,7 @@ class TradingEngine:
                     price_change_pct=signal.get('price_change_pct'),
                     volume_change_pct=signal.get('volume_change_pct'),
                     score=signal.get('score'),
-                    metadata=signal.get('reason')
+                    signal_metadata=signal.get('reason')
                 )
             except Exception as e:
                 logger.error(f"Error saving signal for {signal['symbol']}: {e}")

@@ -85,7 +85,7 @@ class MarketSignal(Base):
     price_change_pct = Column(Float, nullable=True)
     volume_change_pct = Column(Float, nullable=True)
     score = Column(Float, nullable=True)
-    metadata = Column(Text, nullable=True)  # JSON string with additional data
+    signal_metadata = Column(Text, nullable=True)  # JSON string with additional data
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     action_taken = Column(Boolean, default=False)
 
