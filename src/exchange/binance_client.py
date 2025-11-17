@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Circuit breaker configuration
 api_circuit_breaker = CircuitBreaker(
     fail_max=5,
-    timeout_duration=60,
+    reset_timeout=60,
     name='binance_api'
 )
 
