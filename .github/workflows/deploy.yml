@@ -20,6 +20,20 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.DO_HOST }} >> ~/.ssh/known_hosts
 
+          # Debug: Check key format
+          echo "🔍 Checking SSH key..."
+          head -1 ~/.ssh/deploy_key
+          tail -1 ~/.ssh/deploy_key
+          wc -l ~/.ssh/deploy_key
+
+      - name: Test SSH Connection
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          echo "🔌 Testing SSH connection to $DO_USER@$DO_HOST..."
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 $DO_USER@$DO_HOST "echo '✅ SSH connection successful!'"
+
       - name: Deploy to Digital Ocean
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
