@@ -54,7 +54,7 @@ class SchedulerJobs:
 
         except Exception as e:
             logger.error(f"Error in scan_and_trade_job: {e}", exc_info=True)
-            await self.telegram_bot.notify_error(f"H81:0 A:0=8@>20=8O: {str(e)}")
+            await self.telegram_bot.notify_error(f"Scan error: {str(e)}")
 
     async def monitor_positions_job(self):
         """Scheduled job to monitor open positions."""
