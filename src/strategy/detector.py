@@ -1,8 +1,10 @@
 """Pump detector logic."""
+
 import logging
 from typing import Dict
-from ..exchange.market_data import MarketData
+
 from ..config import ScannerConfig
+from ..exchange.market_data import MarketData
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +28,9 @@ class PumpDetector:
             pump_hours_max=self.config.pump_period_hours_max,
             cooldown_hours_min=self.config.cooldown_period_hours_min,
             cooldown_hours_max=self.config.cooldown_period_hours_max,
-            volume_decrease_threshold=self.config.volume_decrease_threshold_pct
+            volume_decrease_threshold=self.config.volume_decrease_threshold_pct,
         )
 
     def is_valid_signal(self, analysis: Dict) -> bool:
         """Check if analysis result is a valid trading signal."""
-        return analysis.get('meets_criteria', False) and analysis.get('score', 0) > 0
+        return analysis.get("meets_criteria", False) and analysis.get("score", 0) > 0

@@ -1,16 +1,18 @@
 """Trading engine - main trading logic coordinator."""
+
 import logging
 import threading
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
 from sqlalchemy.orm import Session
 
 from ..config import Config
+from ..database.repository import MarketSignalRepository, SettingsRepository
 from ..exchange.binance_client import BinanceClient
 from ..exchange.market_data import MarketData
 from ..strategy.scanner import MarketScanner
-from ..database.repository import SettingsRepository, MarketSignalRepository
-from .risk_manager import RiskManager
 from .position_manager import PositionManager
+from .risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +42,11 @@ class TradingEngine:
 
     def get_default_leverage(self) -> int:
         """Get default leverage from settings."""
-        return self.settings_repo.get_int('default_leverage', self.config.trading.default_leverage)
+        return self.settings_repo.get_int("default_leverage", self.config.trading.default_leverage)
 
     def get_margin_per_trade(self) -> float:
         """Get margin per trade from settings."""
-        return self.settings_repo.get_float('margin_per_trade', self.config.trading.margin_per_trade)
+        return self.settings_repo.get_float("margin_per_trade", self.config.trading.margin_per_trade)
 
     def _get_symbol_lock(self, symbol: str) -> threading.Lock:
         """Get or create a lock for the given symbol."""
@@ -70,26 +72,16 @@ class TradingEngine:
         )
 
         # Check if we can open any positions
-        if risk_summary['available_slots'] == 0:
+        if risk_summary["available_slots"] == 0:
             logger.info("No available position slots")
-            return {
-                'success': True,
-                'signals_found': 0,
-                'positions_opened': 0,
-                'reason': 'No available position slots'
-            }
+            return {"success": True, "signals_found": 0, "positions_opened": 0, "reason": "No available position slots"}
 
         # Scan market for opportunities
         signals = self.scanner.scan(top_n=max_signals)
 
         if not signals:
             logger.info("No trading signals found")
-            return {
-                'success': True,
-                'signals_found': 0,
-                'positions_opened': 0,
-                'reason': 'No signals found'
-            }
+            return {"success": True, "signals_found": 0, "positions_opened": 0, "reason": "No signals found"}
 
         logger.info(f"Found {len(signals)} trading signals")
 
@@ -97,14 +89,14 @@ class TradingEngine:
         for signal in signals:
             try:
                 self.signal_repo.create(
-                    symbol=signal['symbol'],
-                    signal_type='pump_cooldown',
-                    price=signal['current_price'],
-                    volume_24h=signal.get('volume_24h'),
-                    price_change_pct=signal.get('price_change_pct'),
-                    volume_change_pct=signal.get('volume_change_pct'),
-                    score=signal.get('score'),
-                    signal_metadata=signal.get('reason')
+                    symbol=signal["symbol"],
+                    signal_type="pump_cooldown",
+                    price=signal["current_price"],
+                    volume_24h=signal.get("volume_24h"),
+                    price_change_pct=signal.get("price_change_pct"),
+                    volume_change_pct=signal.get("volume_change_pct"),
+                    score=signal.get("score"),
+                    signal_metadata=signal.get("reason"),
                 )
             except Exception as e:
                 logger.error(f"Error saving signal for {signal['symbol']}: {e}")
@@ -115,10 +107,10 @@ class TradingEngine:
         leverage = self.get_default_leverage()
 
         for signal in signals:
-            symbol = signal['symbol']
+            symbol = signal["symbol"]
 
             # Check if we've reached limits
-            if len(positions_opened) >= risk_summary['available_slots']:
+            if len(positions_opened) >= risk_summary["available_slots"]:
                 logger.info("Reached maximum position limit")
                 break
 
@@ -134,7 +126,7 @@ class TradingEngine:
                 # Risk check (within lock)
                 risk_check = self.risk_manager.check_before_trade(symbol, margin_per_trade, leverage)
 
-                if not risk_check['approved']:
+                if not risk_check["approved"]:
                     logger.info(f"Trade not approved for {symbol}: {risk_check['reason']}")
                     continue
 
@@ -153,18 +145,16 @@ class TradingEngine:
                 symbol_lock.release()
 
         logger.info(
-            f"Scan and trade cycle completed: "
-            f"{len(signals)} signals found, "
-            f"{len(positions_opened)} positions opened"
+            f"Scan and trade cycle completed: " f"{len(signals)} signals found, " f"{len(positions_opened)} positions opened"
         )
         logger.info("=" * 80)
 
         return {
-            'success': True,
-            'signals_found': len(signals),
-            'positions_opened': len(positions_opened),
-            'signals': signals[:5],  # Return top 5 signals
-            'opened_positions': positions_opened
+            "success": True,
+            "signals_found": len(signals),
+            "positions_opened": len(positions_opened),
+            "signals": signals[:5],  # Return top 5 signals
+            "opened_positions": positions_opened,
         }
 
     def monitor_and_close(self) -> Dict:
@@ -179,24 +169,16 @@ class TradingEngine:
         else:
             logger.debug("Monitoring cycle: No positions closed")
 
-        return {
-            'success': True,
-            'positions_closed': len(closed_positions),
-            'closed_positions': closed_positions
-        }
+        return {"success": True, "positions_closed": len(closed_positions), "closed_positions": closed_positions}
 
     def get_status(self) -> Dict:
         """Get current trading status."""
         risk_summary = self.risk_manager.get_risk_summary()
         open_positions = self.position_manager.get_all_open_positions()
 
-        return {
-            'risk_summary': risk_summary,
-            'open_positions': open_positions,
-            'position_count': len(open_positions)
-        }
+        return {"risk_summary": risk_summary, "open_positions": open_positions, "position_count": len(open_positions)}
 
-    def close_all_positions(self, reason: str = 'manual') -> Dict:
+    def close_all_positions(self, reason: str = "manual") -> Dict:
         """Close all open positions.
 
         Returns: Dict with results
@@ -206,24 +188,20 @@ class TradingEngine:
 
         if not open_positions:
             logger.info("No open positions to close")
-            return {
-                'success': True,
-                'positions_closed': 0,
-                'reason': 'No open positions'
-            }
+            return {"success": True, "positions_closed": 0, "reason": "No open positions"}
 
         closed = []
         for pos in open_positions:
             logger.info(f"Closing position {pos['id']}: {pos['symbol']}")
-            result = self.position_manager.close_position(pos['id'], reason)
+            result = self.position_manager.close_position(pos["id"], reason)
             if result:
                 closed.append(result)
 
         logger.info(f"Closed {len(closed)}/{len(open_positions)} positions")
 
         return {
-            'success': True,
-            'positions_closed': len(closed),
-            'total_positions': len(open_positions),
-            'closed_positions': closed
+            "success": True,
+            "positions_closed": len(closed),
+            "total_positions": len(open_positions),
+            "closed_positions": closed,
         }

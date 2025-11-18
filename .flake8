@@ -1,0 +1,50 @@
+[flake8]
+# Flake8 configuration
+
+# Maximum line length
+max-line-length = 127
+
+# Ignore specific errors
+# E203: Whitespace before ':'
+# W503: Line break before binary operator
+# E501: Line too long (handled by black)
+# E712: Comparison to True/False (will be fixed later)
+# E722: Do not use bare except (will be fixed later)
+# C901: Function is too complex (will be refactored later)
+# F401: Module imported but unused (will be cleaned up later)
+# F541: F-string is missing placeholders (will be fixed later)
+# F841: Local variable assigned but never used (will be cleaned up later)
+extend-ignore = E203,W503,E501,E712,E722,C901,F401,F541,F841
+
+# Exclude directories
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    env,
+    .env,
+    build,
+    dist,
+    *.egg-info,
+    .pytest_cache,
+    .mypy_cache,
+    htmlcov,
+    migrations
+
+# Maximum complexity
+max-complexity = 10
+
+# Per-file ignores
+per-file-ignores =
+    __init__.py:F401
+    tests/*:F401,F811
+
+# Show source code for errors
+show-source = True
+
+# Show statistics
+statistics = True
+
+# Count errors
+count = True

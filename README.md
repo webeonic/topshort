@@ -310,6 +310,30 @@ MIT
 
 Этот бот предоставляется "как есть". Торговля на финансовых рынках несет риски. Используйте на свой страх и риск. Автор не несет ответственности за финансовые потери.
 
+## 📚 Документация
+
+Документация проекта теперь организована в отдельной директории:
+
+### Быстрый старт
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - Установка и запуск за 5 минут
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Развертывание на сервере
+- **[SSH-SETUP.md](SSH-SETUP.md)** - Настройка SSH доступа
+
+### Для разработчиков
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Руководство разработчика
+  - Настройка окружения
+  - Тестирование (160+ тестов)
+  - Миграции базы данных
+  - Отладка
+- **[docs/CI_CD_QUICKSTART.md](docs/CI_CD_QUICKSTART.md)** - CI/CD за 5 минут
+- **[docs/CI_CD.md](docs/CI_CD.md)** - Полная документация CI/CD
+
+### Техническая архитектура
+- **[docs/architecture/](docs/architecture/)** - Детальная техническая документация
+  - [KEYBOARD_SYSTEM.md](docs/architecture/KEYBOARD_SYSTEM.md) - Система интерактивных клавиатур
+  - [POSITION_TRACKING.md](docs/architecture/POSITION_TRACKING.md) - Управление позициями
+  - [TESTING.md](docs/architecture/TESTING.md) - Документация по тестам
+
 ## Поддержка
 
 Для вопросов и проблем создавайте Issue в репозитории.

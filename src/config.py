@@ -1,7 +1,8 @@
 """Configuration management for TopShort trading bot."""
+
 import os
 from dataclasses import dataclass
-from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -11,6 +12,7 @@ load_dotenv()
 @dataclass
 class BinanceConfig:
     """Binance API configuration."""
+
     api_key: str
     api_secret: str
     testnet: bool = True
@@ -19,6 +21,7 @@ class BinanceConfig:
 @dataclass
 class TelegramConfig:
     """Telegram bot configuration."""
+
     bot_token: str
     chat_id: str
 
@@ -26,12 +29,14 @@ class TelegramConfig:
 @dataclass
 class DatabaseConfig:
     """Database configuration."""
+
     path: str
 
 
 @dataclass
 class TradingConfig:
     """Trading configuration (default values, can be changed via settings)."""
+
     margin_per_trade: float
     max_positions: int
     max_total_margin: float
@@ -42,6 +47,7 @@ class TradingConfig:
 @dataclass
 class ScannerConfig:
     """Market scanner configuration."""
+
     pump_threshold_pct: float
     pump_period_hours_min: int
     pump_period_hours_max: int
@@ -53,6 +59,7 @@ class ScannerConfig:
 @dataclass
 class SchedulerConfig:
     """Scheduler configuration."""
+
     scan_interval_minutes: int
     monitor_interval_seconds: int
 
@@ -60,6 +67,7 @@ class SchedulerConfig:
 @dataclass
 class LoggingConfig:
     """Logging configuration."""
+
     level: str
     file: str
 
@@ -67,6 +75,7 @@ class LoggingConfig:
 @dataclass
 class Config:
     """Main configuration container."""
+
     binance: BinanceConfig
     telegram: TelegramConfig
     database: DatabaseConfig
@@ -80,40 +89,32 @@ def load_config() -> Config:
     """Load configuration from environment variables."""
     return Config(
         binance=BinanceConfig(
-            api_key=os.getenv('BINANCE_API_KEY', ''),
-            api_secret=os.getenv('BINANCE_API_SECRET', ''),
-            testnet=os.getenv('BINANCE_TESTNET', 'true').lower() == 'true'
+            api_key=os.getenv("BINANCE_API_KEY", ""),
+            api_secret=os.getenv("BINANCE_API_SECRET", ""),
+            testnet=os.getenv("BINANCE_TESTNET", "true").lower() == "true",
         ),
-        telegram=TelegramConfig(
-            bot_token=os.getenv('TELEGRAM_BOT_TOKEN', ''),
-            chat_id=os.getenv('TELEGRAM_CHAT_ID', '')
-        ),
-        database=DatabaseConfig(
-            path=os.getenv('DATABASE_PATH', './data/topshort.db')
-        ),
+        telegram=TelegramConfig(bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""), chat_id=os.getenv("TELEGRAM_CHAT_ID", "")),
+        database=DatabaseConfig(path=os.getenv("DATABASE_PATH", "./data/topshort.db")),
         trading=TradingConfig(
-            margin_per_trade=float(os.getenv('MARGIN_PER_TRADE', '100.0')),
-            max_positions=int(os.getenv('MAX_POSITIONS', '10')),
-            max_total_margin=float(os.getenv('MAX_TOTAL_MARGIN', '1000.0')),
-            default_leverage=int(os.getenv('DEFAULT_LEVERAGE', '20')),
-            take_profit_pct=float(os.getenv('TAKE_PROFIT_PCT', '5.0'))
+            margin_per_trade=float(os.getenv("MARGIN_PER_TRADE", "100.0")),
+            max_positions=int(os.getenv("MAX_POSITIONS", "10")),
+            max_total_margin=float(os.getenv("MAX_TOTAL_MARGIN", "1000.0")),
+            default_leverage=int(os.getenv("DEFAULT_LEVERAGE", "20")),
+            take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "5.0")),
         ),
         scanner=ScannerConfig(
-            pump_threshold_pct=float(os.getenv('PUMP_THRESHOLD_PCT', '30.0')),
-            pump_period_hours_min=int(os.getenv('PUMP_PERIOD_HOURS_MIN', '48')),
-            pump_period_hours_max=int(os.getenv('PUMP_PERIOD_HOURS_MAX', '72')),
-            cooldown_period_hours_min=int(os.getenv('COOLDOWN_PERIOD_HOURS_MIN', '4')),
-            cooldown_period_hours_max=int(os.getenv('COOLDOWN_PERIOD_HOURS_MAX', '8')),
-            volume_decrease_threshold_pct=float(os.getenv('VOLUME_DECREASE_THRESHOLD_PCT', '20.0'))
+            pump_threshold_pct=float(os.getenv("PUMP_THRESHOLD_PCT", "30.0")),
+            pump_period_hours_min=int(os.getenv("PUMP_PERIOD_HOURS_MIN", "48")),
+            pump_period_hours_max=int(os.getenv("PUMP_PERIOD_HOURS_MAX", "72")),
+            cooldown_period_hours_min=int(os.getenv("COOLDOWN_PERIOD_HOURS_MIN", "4")),
+            cooldown_period_hours_max=int(os.getenv("COOLDOWN_PERIOD_HOURS_MAX", "8")),
+            volume_decrease_threshold_pct=float(os.getenv("VOLUME_DECREASE_THRESHOLD_PCT", "20.0")),
         ),
         scheduler=SchedulerConfig(
-            scan_interval_minutes=int(os.getenv('SCAN_INTERVAL_MINUTES', '60')),
-            monitor_interval_seconds=int(os.getenv('MONITOR_INTERVAL_SECONDS', '30'))
+            scan_interval_minutes=int(os.getenv("SCAN_INTERVAL_MINUTES", "60")),
+            monitor_interval_seconds=int(os.getenv("MONITOR_INTERVAL_SECONDS", "30")),
         ),
-        logging=LoggingConfig(
-            level=os.getenv('LOG_LEVEL', 'INFO'),
-            file=os.getenv('LOG_FILE', './logs/topshort.log')
-        )
+        logging=LoggingConfig(level=os.getenv("LOG_LEVEL", "INFO"), file=os.getenv("LOG_FILE", "./logs/topshort.log")),
     )
 
 

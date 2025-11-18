@@ -1,18 +1,19 @@
 """Main entry point for TopShort trading bot."""
-import sys
-import logging
+
 import asyncio
+import logging
 import signal
+import sys
 from pathlib import Path
 
 import colorlog
 
+from .bot.telegram_bot import TelegramBot
 from .config import get_config
 from .database.models import create_database, get_session, init_default_settings
 from .exchange.binance_client import BinanceClient
-from .trading.engine import TradingEngine
-from .bot.telegram_bot import TelegramBot
 from .scheduler.jobs import SchedulerJobs
+from .trading.engine import TradingEngine
 
 
 def setup_logging(config):
@@ -23,15 +24,15 @@ def setup_logging(config):
 
     # Create formatter
     formatter = colorlog.ColoredFormatter(
-        '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
+        "%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
         log_colors={
-            'DEBUG': 'cyan',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'red,bg_white',
-        }
+            "DEBUG": "cyan",
+            "INFO": "green",
+            "WARNING": "yellow",
+            "ERROR": "red",
+            "CRITICAL": "red,bg_white",
+        },
     )
 
     # Console handler
@@ -40,9 +41,7 @@ def setup_logging(config):
 
     # File handler
     file_handler = logging.FileHandler(config.logging.file)
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    ))
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
 
     # Root logger
     root_logger = logging.getLogger()
@@ -51,9 +50,9 @@ def setup_logging(config):
     root_logger.addHandler(file_handler)
 
     # Reduce verbosity of some libraries
-    logging.getLogger('ccxt').setLevel(logging.WARNING)
-    logging.getLogger('telegram').setLevel(logging.WARNING)
-    logging.getLogger('apscheduler').setLevel(logging.INFO)
+    logging.getLogger("ccxt").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.INFO)
 
 
 class TopShortBot:
@@ -88,7 +87,7 @@ class TopShortBot:
         database_path = Path(self.config.database.path)
         database_path.parent.mkdir(parents=True, exist_ok=True)
 
-        database_url = f'sqlite:///{self.config.database.path}'
+        database_url = f"sqlite:///{self.config.database.path}"
         self.engine_db = create_database(database_url)
         self.session = get_session(self.engine_db)
 
@@ -99,9 +98,7 @@ class TopShortBot:
         # Initialize Binance client
         self.logger.info("Initializing Binance client...")
         self.client = BinanceClient(
-            api_key=self.config.binance.api_key,
-            api_secret=self.config.binance.api_secret,
-            testnet=self.config.binance.testnet
+            api_key=self.config.binance.api_key, api_secret=self.config.binance.api_secret, testnet=self.config.binance.testnet
         )
 
         # Load markets
@@ -229,5 +226,5 @@ def main():
     bot.run()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

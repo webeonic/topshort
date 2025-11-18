@@ -1,24 +1,20 @@
 """Telegram bot command handlers."""
-import os
+
 import logging
+import os
 from functools import wraps
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from ..database.repository import (
-    SettingsRepository, TradeHistoryRepository,
-    BotStatusRepository, MarketSignalRepository
-)
+from ..database.repository import BotStatusRepository, MarketSignalRepository, SettingsRepository, TradeHistoryRepository
 from ..trading.engine import TradingEngine
+from .keyboard_builder import KeyboardBuilder, KeyboardTemplates
 
 logger = logging.getLogger(__name__)
 
 # Load authorized users from environment
-AUTHORIZED_USERS = set(
-    user_id.strip()
-    for user_id in os.getenv('TELEGRAM_AUTHORIZED_USERS', '').split(',')
-    if user_id.strip()
-)
+AUTHORIZED_USERS = set(user_id.strip() for user_id in os.getenv("TELEGRAM_AUTHORIZED_USERS", "").split(",") if user_id.strip())
 
 
 class AuditLogger:
@@ -28,92 +24,46 @@ class AuditLogger:
     def log_security_event(user_id: int, username: str, action: str, details: dict = None):
         """Log security-relevant events."""
         import json
-        details_str = json.dumps(details) if details else '{}'
-        logger.warning(
-            f"SECURITY_EVENT: user_id={user_id}, username={username}, "
-            f"action={action}, details={details_str}"
-        )
+
+        details_str = json.dumps(details) if details else "{}"
+        logger.warning(f"SECURITY_EVENT: user_id={user_id}, username={username}, " f"action={action}, details={details_str}")
 
 
 audit = AuditLogger()
 
 # Allowed settings with their types and valid ranges
 ALLOWED_SETTINGS = {
-    'margin_per_trade': {
-        'type': float,
-        'min': 1.0,
-        'max': 10000.0,
-        'description': 'Margin per trade in USDT'
+    "margin_per_trade": {"type": float, "min": 1.0, "max": 10000.0, "description": "Margin per trade in USDT"},
+    "max_positions": {"type": int, "min": 1, "max": 50, "description": "Maximum number of simultaneous positions"},
+    "max_total_margin": {"type": float, "min": 10.0, "max": 100000.0, "description": "Maximum total margin in USDT"},
+    "default_leverage": {"type": int, "min": 1, "max": 125, "description": "Default leverage for positions"},
+    "take_profit_pct": {"type": float, "min": 0.1, "max": 50.0, "description": "Take profit percentage"},
+    "pump_threshold_pct": {
+        "type": float,
+        "min": 10.0,
+        "max": 200.0,
+        "description": "Minimum pump percentage to trigger signal",
     },
-    'max_positions': {
-        'type': int,
-        'min': 1,
-        'max': 50,
-        'description': 'Maximum number of simultaneous positions'
+    "pump_period_hours_min": {"type": int, "min": 1, "max": 168, "description": "Minimum hours for pump period"},
+    "pump_period_hours_max": {"type": int, "min": 1, "max": 168, "description": "Maximum hours for pump period"},
+    "cooldown_period_hours_min": {"type": int, "min": 1, "max": 48, "description": "Minimum hours for cooldown period"},
+    "cooldown_period_hours_max": {"type": int, "min": 1, "max": 48, "description": "Maximum hours for cooldown period"},
+    "volume_decrease_threshold_pct": {
+        "type": float,
+        "min": 0.0,
+        "max": 100.0,
+        "description": "Volume decrease threshold percentage",
     },
-    'max_total_margin': {
-        'type': float,
-        'min': 10.0,
-        'max': 100000.0,
-        'description': 'Maximum total margin in USDT'
-    },
-    'default_leverage': {
-        'type': int,
-        'min': 1,
-        'max': 125,
-        'description': 'Default leverage for positions'
-    },
-    'take_profit_pct': {
-        'type': float,
-        'min': 0.1,
-        'max': 50.0,
-        'description': 'Take profit percentage'
-    },
-    'pump_threshold_pct': {
-        'type': float,
-        'min': 10.0,
-        'max': 200.0,
-        'description': 'Minimum pump percentage to trigger signal'
-    },
-    'pump_period_hours_min': {
-        'type': int,
-        'min': 1,
-        'max': 168,
-        'description': 'Minimum hours for pump period'
-    },
-    'pump_period_hours_max': {
-        'type': int,
-        'min': 1,
-        'max': 168,
-        'description': 'Maximum hours for pump period'
-    },
-    'cooldown_period_hours_min': {
-        'type': int,
-        'min': 1,
-        'max': 48,
-        'description': 'Minimum hours for cooldown period'
-    },
-    'cooldown_period_hours_max': {
-        'type': int,
-        'min': 1,
-        'max': 48,
-        'description': 'Maximum hours for cooldown period'
-    },
-    'volume_decrease_threshold_pct': {
-        'type': float,
-        'min': 0.0,
-        'max': 100.0,
-        'description': 'Volume decrease threshold percentage'
-    }
 }
 
 
 def require_auth(func):
     """Decorator to require authentication for sensitive commands."""
+
     @wraps(func)
     async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = str(update.effective_user.id)
-        username = update.effective_user.username or 'unknown'
+        username = update.effective_user.username or "unknown"
 
         if not AUTHORIZED_USERS or user_id not in AUTHORIZED_USERS:
             logger.warning(
@@ -125,7 +75,7 @@ def require_auth(func):
                 "❌ *Access Denied*\n\n"
                 "You are not authorized to use this command.\n"
                 "Contact the administrator if you need access.",
-                parse_mode='Markdown'
+                parse_mode="Markdown",
             )
             return
 
@@ -145,6 +95,7 @@ class BotCommands:
         self.history_repo = TradeHistoryRepository(session)
         self.bot_status_repo = BotStatusRepository(session)
         self.signal_repo = MarketSignalRepository(session)
+        self.keyboard_builder = KeyboardBuilder(session)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
@@ -154,6 +105,7 @@ class BotCommands:
 Automatic trading bot for short positions on Binance Futures.
 
 *Available commands:*
+/menu - Show interactive menu
 /status - Current status and open positions
 /positions - List all open positions
 /history - History of last 10 trades
@@ -168,8 +120,15 @@ Automatic trading bot for short positions on Binance Futures.
 /help - Help with commands
 
 The bot automatically scans the market every hour and opens short positions on cooling pairs after pump.
+
+💡 *Tip:* Use /menu for interactive buttons!
 """
-        await update.message.reply_text(welcome_message, parse_mode='Markdown')
+        # Try to use keyboard from template, fallback to simple message
+        keyboard = self.keyboard_builder.build_inline_keyboard_from_template("main_menu")
+        if keyboard:
+            await update.message.reply_text(welcome_message, parse_mode="Markdown", reply_markup=keyboard)
+        else:
+            await update.message.reply_text(welcome_message, parse_mode="Markdown")
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
@@ -177,7 +136,7 @@ The bot automatically scans the market every hour and opens short positions on c
             # Get bot status
             bot_status = self.bot_status_repo.get()
             trading_status = self.engine.get_status()
-            risk = trading_status['risk_summary']
+            risk = trading_status["risk_summary"]
 
             status_emoji = "🟢" if bot_status.is_active and not bot_status.is_paused else "🔴"
             status_text = "Active" if bot_status.is_active and not bot_status.is_paused else "Paused"
@@ -197,7 +156,7 @@ The bot automatically scans the market every hour and opens short positions on c
 📈 Slots utilization: {risk['positions_utilization_pct']:.1f}%
 💸 Margin utilization: {risk['margin_utilization_pct']:.1f}%
 """
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in status command: {e}")
@@ -215,7 +174,7 @@ The bot automatically scans the market every hour and opens short positions on c
             message = f"📊 *Open positions ({len(positions)}):*\n\n"
 
             for pos in positions:
-                pnl_emoji = "🟢" if pos['unrealized_pnl'] > 0 else "🔴"
+                pnl_emoji = "🟢" if pos["unrealized_pnl"] > 0 else "🔴"
                 message += f"""
 *{pos['symbol']}*
 💰 Entry: {pos['entry_price']:.4f}
@@ -227,7 +186,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
 """
 
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in positions command: {e}")
@@ -256,7 +215,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
 """
 
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in history command: {e}")
@@ -267,11 +226,11 @@ The bot automatically scans the market every hour and opens short positions on c
         try:
             stats = self.history_repo.get_statistics()
 
-            if stats['total_trades'] == 0:
+            if stats["total_trades"] == 0:
                 await update.message.reply_text("📭 No statistics yet")
                 return
 
-            win_emoji = "🟢" if stats['total_pnl'] > 0 else "🔴"
+            win_emoji = "🟢" if stats["total_pnl"] > 0 else "🔴"
 
             message = f"""
 📊 *Trading Statistics*
@@ -285,7 +244,7 @@ The bot automatically scans the market every hour and opens short positions on c
 💰 Average P&L: {stats['avg_pnl']:.2f} USDT
 📊 Average P&L %: {stats['avg_pnl_pct']:.2f}%
 """
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
@@ -303,7 +262,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
             message += "\n💡 To change: /set <key> <value>"
 
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in settings command: {e}")
@@ -317,8 +276,7 @@ The bot automatically scans the market every hour and opens short positions on c
                 await update.message.reply_text(
                     "Usage: /set <key> <value>\n"
                     "Example: /set margin_per_trade 150\n\n"
-                    "Available settings:\n" +
-                    "\n".join(f"  • {k}: {v['description']}" for k, v in ALLOWED_SETTINGS.items())
+                    "Available settings:\n" + "\n".join(f"  • {k}: {v['description']}" for k, v in ALLOWED_SETTINGS.items())
                 )
                 return
 
@@ -329,16 +287,15 @@ The bot automatically scans the market every hour and opens short positions on c
             if key not in ALLOWED_SETTINGS:
                 await update.message.reply_text(
                     f"❌ Invalid setting key: *{key}*\n\n"
-                    "Available settings:\n" +
-                    "\n".join(f"  • {k}" for k in ALLOWED_SETTINGS.keys()),
-                    parse_mode='Markdown'
+                    "Available settings:\n" + "\n".join(f"  • {k}" for k in ALLOWED_SETTINGS.keys()),
+                    parse_mode="Markdown",
                 )
                 return
 
             setting_config = ALLOWED_SETTINGS[key]
-            expected_type = setting_config['type']
-            min_val = setting_config['min']
-            max_val = setting_config['max']
+            expected_type = setting_config["type"]
+            min_val = setting_config["min"]
+            max_val = setting_config["max"]
 
             # Validate type and range
             try:
@@ -349,23 +306,19 @@ The bot automatically scans the market every hour and opens short positions on c
                         f"❌ Value out of range for *{key}*\n\n"
                         f"Value must be between {min_val} and {max_val}\n"
                         f"You provided: {typed_value}",
-                        parse_mode='Markdown'
+                        parse_mode="Markdown",
                     )
                     return
 
                 # Save validated setting
-                self.settings_repo.set(key, str(typed_value), setting_config['description'])
+                self.settings_repo.set(key, str(typed_value), setting_config["description"])
 
                 await update.message.reply_text(
-                    f"✅ Setting updated successfully\n\n"
-                    f"*{key}* = {typed_value}\n"
-                    f"_{setting_config['description']}_",
-                    parse_mode='Markdown'
+                    f"✅ Setting updated successfully\n\n" f"*{key}* = {typed_value}\n" f"_{setting_config['description']}_",
+                    parse_mode="Markdown",
                 )
 
-                logger.info(
-                    f"Setting updated: {key}={typed_value} by user {update.effective_user.id}"
-                )
+                logger.info(f"Setting updated: {key}={typed_value} by user {update.effective_user.id}")
 
             except (ValueError, TypeError) as e:
                 await update.message.reply_text(
@@ -373,7 +326,7 @@ The bot automatically scans the market every hour and opens short positions on c
                     f"Expected: {expected_type.__name__}\n"
                     f"You provided: {value_str}\n"
                     f"Error: {str(e)}",
-                    parse_mode='Markdown'
+                    parse_mode="Markdown",
                 )
 
         except Exception as e:
@@ -416,7 +369,7 @@ The bot automatically scans the market every hour and opens short positions on c
 📊 Signals found: {result['signals_found']}
 ✅ Positions opened: {result['positions_opened']}
 """
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in scan command: {e}")
@@ -431,10 +384,10 @@ The bot automatically scans the market every hour and opens short positions on c
                 return
 
             symbol = context.args[0]
-            result = self.engine.position_manager.close_position_by_symbol(symbol, 'manual')
+            result = self.engine.position_manager.close_position_by_symbol(symbol, "manual")
 
             if result:
-                pnl_emoji = "🟢" if result['pnl'] > 0 else "🔴"
+                pnl_emoji = "🟢" if result["pnl"] > 0 else "🔴"
                 message = f"""
 ✅ Position closed
 
@@ -443,7 +396,7 @@ The bot automatically scans the market every hour and opens short positions on c
 💰 Exit: {result['exit_price']:.4f}
 {pnl_emoji} P&L: {result['pnl']:.2f} USDT ({result['pnl_pct']:.2f}%)
 """
-                await update.message.reply_text(message, parse_mode='Markdown')
+                await update.message.reply_text(message, parse_mode="Markdown")
             else:
                 await update.message.reply_text(f"❌ Failed to close position {symbol}")
 
@@ -457,23 +410,49 @@ The bot automatically scans the market every hour and opens short positions on c
         try:
             # Audit log
             audit.log_security_event(
-                update.effective_user.id,
-                update.effective_user.username or 'unknown',
-                'CLOSE_ALL_POSITIONS',
-                {}
+                update.effective_user.id, update.effective_user.username or "unknown", "CLOSE_ALL_POSITIONS", {}
             )
 
             await update.message.reply_text("🔄 Closing all positions...")
 
-            result = self.engine.close_all_positions('manual')
+            result = self.engine.close_all_positions("manual")
 
             message = f"""
 ✅ Closing completed
 
 📊 Closed positions: {result['positions_closed']}/{result.get('total_positions', 0)}
 """
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in closeall command: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def show_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /menu command - show main interactive menu."""
+        try:
+            # Build main menu keyboard from template
+            keyboard = self.keyboard_builder.build_inline_keyboard_from_template("main_menu")
+
+            if keyboard:
+                message = """
+🎮 *Main Menu*
+
+Choose an action from the buttons below:
+"""
+                await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+            else:
+                # Fallback: create keyboard programmatically
+                buttons_data = KeyboardTemplates.main_menu()
+                keyboard = self.keyboard_builder.create_inline_keyboard(buttons_data, n_cols=2)
+
+                message = """
+🎮 *Main Menu*
+
+Choose an action from the buttons below:
+"""
+                await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+
+        except Exception as e:
+            logger.error(f"Error in show_menu command: {e}")
             await update.message.reply_text(f"❌ Error: {e}")

@@ -1,12 +1,14 @@
 """Position management."""
+
 import logging
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Dict, List, Optional
-from decimal import Decimal, ROUND_HALF_UP
+
 from sqlalchemy.orm import Session
 
-from ..database.repository import PositionRepository, SettingsRepository, BotStatusRepository
-from ..exchange.binance_client import BinanceClient
 from ..config import TradingConfig
+from ..database.repository import BotStatusRepository, PositionRepository, SettingsRepository
+from ..exchange.binance_client import BinanceClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ class PositionManager:
 
     def get_take_profit_pct(self) -> float:
         """Get take profit percentage from settings."""
-        return self.settings_repo.get_float('take_profit_pct', self.config.take_profit_pct)
+        return self.settings_repo.get_float("take_profit_pct", self.config.take_profit_pct)
 
     def calculate_take_profit_price(self, entry_price: float) -> float:
         """Calculate take profit price for short position.
@@ -37,7 +39,7 @@ class PositionManager:
         # Use Decimal for precise calculation
         entry = Decimal(str(entry_price))
         tp_percent = Decimal(str(tp_pct))
-        tp_price = (entry * (1 - tp_percent / 100)).quantize(Decimal('0.00000001'), rounding=ROUND_HALF_UP)
+        tp_price = (entry * (1 - tp_percent / 100)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
 
         return float(tp_price)
 
@@ -63,17 +65,17 @@ class PositionManager:
                 return None
 
             # Get entry price from order
-            entry_price = float(order.get('average', 0) or order.get('price', 0))
+            entry_price = float(order.get("average", 0) or order.get("price", 0))
             if entry_price == 0:
                 # Fallback to current price if order doesn't have price
                 ticker = self.client.get_ticker(symbol)
-                entry_price = ticker['last'] if ticker else 0
+                entry_price = ticker["last"] if ticker else 0
 
             if entry_price == 0:
                 logger.error(f"Could not determine entry price for {symbol}")
                 # Try to close orphaned exchange position
                 if order:
-                    quantity = float(order.get('filled', 0) or order.get('amount', 0))
+                    quantity = float(order.get("filled", 0) or order.get("amount", 0))
                     if quantity > 0:
                         try:
                             self.client.close_short_position(symbol, quantity)
@@ -83,7 +85,7 @@ class PositionManager:
                 return None
 
             # Calculate quantity from order
-            quantity = float(order.get('filled', 0) or order.get('amount', 0))
+            quantity = float(order.get("filled", 0) or order.get("amount", 0))
 
             # Calculate take profit price
             tp_price = self.calculate_take_profit_price(entry_price)
@@ -100,8 +102,29 @@ class PositionManager:
                     margin=margin,
                     leverage=leverage,
                     take_profit_price=tp_price,
-                    order_id=order.get('id')
+                    order_id=order.get("id"),
+                    source="bot_auto",
                 )
+
+                # Place take-profit limit order immediately
+                tp_order = self.client.create_limit_order(
+                    symbol=symbol,
+                    side="buy",  # Buy to close short position
+                    quantity=quantity,
+                    price=tp_price,
+                    position_side="SHORT",
+                )
+
+                if tp_order:
+                    # Record TP limit order in database
+                    self.position_repo.place_take_profit_order(position.id, tp_order.get("id"))
+                    logger.info(f"Take-profit limit order placed: {tp_order.get('id')} @ {tp_price:.4f}")
+                else:
+                    logger.warning(f"Failed to place take-profit limit order for {symbol}")
+                    # Mark TP order as failed
+                    self.position_repo.update_take_profit_status(
+                        position.id, "failed", error_message="Failed to place limit order"
+                    )
 
                 # Update bot statistics
                 self.bot_status_repo.increment_opened()
@@ -113,18 +136,20 @@ class PositionManager:
                     f"Position opened: {symbol}, "
                     f"Entry={entry_price:.4f}, "
                     f"Quantity={quantity:.8f}, "
-                    f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%)"
+                    f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%), "
+                    f"TP Order={tp_order.get('id') if tp_order else 'FAILED'}"
                 )
 
                 return {
-                    'position_id': position.id,
-                    'symbol': symbol,
-                    'entry_price': entry_price,
-                    'quantity': quantity,
-                    'margin': margin,
-                    'leverage': leverage,
-                    'take_profit_price': tp_price,
-                    'order_id': order.get('id')
+                    "position_id": position.id,
+                    "symbol": symbol,
+                    "entry_price": entry_price,
+                    "quantity": quantity,
+                    "margin": margin,
+                    "leverage": leverage,
+                    "take_profit_price": tp_price,
+                    "order_id": order.get("id"),
+                    "take_profit_order_id": tp_order.get("id") if tp_order else None,
                 }
 
             except Exception as db_error:
@@ -147,7 +172,7 @@ class PositionManager:
             # Try to close orphaned exchange position
             if order:
                 try:
-                    quantity = float(order.get('filled', 0) or order.get('amount', 0))
+                    quantity = float(order.get("filled", 0) or order.get("amount", 0))
                     if quantity > 0:
                         self.client.close_short_position(symbol, quantity)
                         logger.info(f"Closed orphaned position after error for {symbol}")
@@ -156,7 +181,7 @@ class PositionManager:
 
             return None
 
-    def close_position(self, position_id: int, reason: str = 'take_profit') -> Optional[Dict]:
+    def close_position(self, position_id: int, reason: str = "take_profit") -> Optional[Dict]:
         """Close an open position.
 
         Args:
@@ -171,7 +196,7 @@ class PositionManager:
                 logger.error(f"Position {position_id} not found")
                 return None
 
-            if position.status != 'open':
+            if position.status != "open":
                 logger.warning(f"Position {position_id} is not open: {position.status}")
                 return None
 
@@ -185,11 +210,11 @@ class PositionManager:
                 return None
 
             # Get exit price from order
-            exit_price = float(order.get('average', 0) or order.get('price', 0))
+            exit_price = float(order.get("average", 0) or order.get("price", 0))
             if exit_price == 0:
                 # Fallback to current price
                 ticker = self.client.get_ticker(position.symbol)
-                exit_price = ticker['last'] if ticker else position.current_price
+                exit_price = ticker["last"] if ticker else position.current_price
 
             # Close position in database
             closed_position = self.position_repo.close(position_id, exit_price, reason)
@@ -205,13 +230,13 @@ class PositionManager:
             )
 
             return {
-                'position_id': position_id,
-                'symbol': position.symbol,
-                'entry_price': position.entry_price,
-                'exit_price': exit_price,
-                'pnl': closed_position.pnl,
-                'pnl_pct': closed_position.pnl_pct,
-                'reason': reason
+                "position_id": position_id,
+                "symbol": position.symbol,
+                "entry_price": position.entry_price,
+                "exit_price": exit_price,
+                "pnl": closed_position.pnl,
+                "pnl_pct": closed_position.pnl_pct,
+                "reason": reason,
             }
 
         except Exception as e:
@@ -245,7 +270,7 @@ class PositionManager:
                     logger.warning(f"Could not get ticker for {position.symbol}")
                     continue
 
-                current_price = ticker['last']
+                current_price = ticker["last"]
 
                 # Update current price in database
                 self.position_repo.update_current_price(position.id, current_price)
@@ -258,7 +283,7 @@ class PositionManager:
                         f"Current={current_price:.4f}, TP={position.take_profit_price:.4f}"
                     )
 
-                    close_info = self.close_position(position.id, 'take_profit')
+                    close_info = self.close_position(position.id, "take_profit")
                     if close_info:
                         closed.append(close_info)
 
@@ -283,29 +308,33 @@ class PositionManager:
                 current = Decimal(str(pos.current_price))
                 qty = Decimal(str(pos.quantity))
 
-                unrealized_pnl = float(((entry - current) * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-                unrealized_pnl_pct = float((((entry - current) / entry) * 100).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+                unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                unrealized_pnl_pct = float(
+                    (((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                )
             else:
                 unrealized_pnl = 0
                 unrealized_pnl_pct = 0
 
-            result.append({
-                'id': pos.id,
-                'symbol': pos.symbol,
-                'entry_price': pos.entry_price,
-                'current_price': pos.current_price,
-                'quantity': pos.quantity,
-                'margin': pos.margin,
-                'leverage': pos.leverage,
-                'take_profit_price': pos.take_profit_price,
-                'unrealized_pnl': round(unrealized_pnl, 2),
-                'unrealized_pnl_pct': round(unrealized_pnl_pct, 2),
-                'opened_at': pos.opened_at.isoformat() if pos.opened_at else None
-            })
+            result.append(
+                {
+                    "id": pos.id,
+                    "symbol": pos.symbol,
+                    "entry_price": pos.entry_price,
+                    "current_price": pos.current_price,
+                    "quantity": pos.quantity,
+                    "margin": pos.margin,
+                    "leverage": pos.leverage,
+                    "take_profit_price": pos.take_profit_price,
+                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+                    "opened_at": pos.opened_at.isoformat() if pos.opened_at else None,
+                }
+            )
 
         return result
 
-    def close_position_by_symbol(self, symbol: str, reason: str = 'manual') -> Optional[Dict]:
+    def close_position_by_symbol(self, symbol: str, reason: str = "manual") -> Optional[Dict]:
         """Close position by symbol."""
         position = self.position_repo.get_by_symbol(symbol)
         if not position:

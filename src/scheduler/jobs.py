@@ -1,14 +1,16 @@
 """Scheduled jobs for trading automation."""
-import logging
+
 import asyncio
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.cron import CronTrigger
+import logging
 from datetime import datetime
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
+from ..bot.telegram_bot import TelegramBot
 from ..database.repository import BotStatusRepository, MarketSignalRepository
 from ..trading.engine import TradingEngine
-from ..bot.telegram_bot import TelegramBot
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,8 @@ class SchedulerJobs:
             await self.telegram_bot.notify_scan_complete(result)
 
             # If positions were opened, send individual notifications
-            if result.get('opened_positions'):
-                for pos_info in result['opened_positions']:
+            if result.get("opened_positions"):
+                for pos_info in result["opened_positions"]:
                     await self.telegram_bot.notify_position_opened(pos_info)
 
             logger.info(f"Scan job completed: {result['positions_opened']} positions opened")
@@ -75,8 +77,8 @@ class SchedulerJobs:
             result = self.engine.monitor_and_close()
 
             # Send notifications for closed positions
-            if result.get('closed_positions'):
-                for close_info in result['closed_positions']:
+            if result.get("closed_positions"):
+                for close_info in result["closed_positions"]:
                     await self.telegram_bot.notify_position_closed(close_info)
 
                 logger.info(f"Monitor job: {result['positions_closed']} positions closed")
@@ -106,8 +108,8 @@ class SchedulerJobs:
         self.scheduler.add_job(
             self.scan_and_trade_job,
             trigger=IntervalTrigger(minutes=scan_interval_minutes),
-            id='scan_and_trade',
-            name='Market Scan and Trade',
+            id="scan_and_trade",
+            name="Market Scan and Trade",
             replace_existing=True,
             max_instances=1,  # Prevent overlapping runs
         )
@@ -118,8 +120,8 @@ class SchedulerJobs:
         self.scheduler.add_job(
             self.monitor_positions_job,
             trigger=IntervalTrigger(seconds=monitor_interval_seconds),
-            id='monitor_positions',
-            name='Monitor Positions',
+            id="monitor_positions",
+            name="Monitor Positions",
             replace_existing=True,
             max_instances=1,
         )
@@ -129,8 +131,8 @@ class SchedulerJobs:
         self.scheduler.add_job(
             self.cleanup_data_job,
             trigger=CronTrigger(hour=2, minute=0),
-            id='cleanup_data',
-            name='Cleanup Old Data',
+            id="cleanup_data",
+            name="Cleanup Old Data",
             replace_existing=True,
         )
         logger.info("Scheduled cleanup_data job: daily at 2:00 AM")
@@ -160,10 +162,12 @@ class SchedulerJobs:
         """Get status of all jobs."""
         jobs = []
         for job in self.scheduler.get_jobs():
-            jobs.append({
-                'id': job.id,
-                'name': job.name,
-                'next_run': job.next_run_time.isoformat() if job.next_run_time else None,
-                'trigger': str(job.trigger)
-            })
+            jobs.append(
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                    "trigger": str(job.trigger),
+                }
+            )
         return jobs

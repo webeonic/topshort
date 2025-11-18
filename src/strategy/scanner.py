@@ -1,8 +1,10 @@
 """Market scanner for finding trading opportunities."""
+
 import logging
-from typing import List, Dict
-from ..exchange.market_data import MarketData
+from typing import Dict, List
+
 from ..config import ScannerConfig
+from ..exchange.market_data import MarketData
 from .detector import PumpDetector
 
 logger = logging.getLogger(__name__)
@@ -30,7 +32,7 @@ class MarketScanner:
             cooldown_hours_min=self.config.cooldown_period_hours_min,
             cooldown_hours_max=self.config.cooldown_period_hours_max,
             volume_decrease_threshold=self.config.volume_decrease_threshold_pct,
-            top_n=top_n
+            top_n=top_n,
         )
 
         logger.info(f"Market scan completed: Found {len(results)} opportunities")

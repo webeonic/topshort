@@ -1,8 +1,9 @@
 """Market data fetching and analysis."""
+
 import logging
-from typing import List, Dict, Optional
-from datetime import datetime, timedelta
 import statistics
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
 from .binance_client import BinanceClient
 
@@ -29,7 +30,7 @@ class MarketData:
 
         # Use close prices
         start_price = ohlcv[-hours][4]  # Close price from 'hours' ago
-        current_price = ohlcv[-1][4]    # Current close price
+        current_price = ohlcv[-1][4]  # Current close price
 
         if start_price == 0:
             return None
@@ -80,7 +81,7 @@ class MarketData:
             # Fetch OHLCV data (need enough data for analysis)
             # Add extra hours for volume comparison
             total_hours = pump_hours + cooldown_hours + 24
-            ohlcv = self.client.get_ohlcv(symbol, timeframe='1h', limit=total_hours)
+            ohlcv = self.client.get_ohlcv(symbol, timeframe="1h", limit=total_hours)
 
             if not ohlcv or len(ohlcv) < total_hours:
                 logger.debug(f"Insufficient data for {symbol}")
@@ -102,26 +103,32 @@ class MarketData:
             ticker = self.client.get_ticker(symbol)
 
             return {
-                'symbol': symbol,
-                'current_price': current_price,
-                'price_change_pct': price_change_pct,
-                'volume_change_pct': volume_change_pct,
-                'current_volume': current_volume,
-                'volume_24h': volume_24h,
-                'bid': ticker.get('bid') if ticker else None,
-                'ask': ticker.get('ask') if ticker else None,
-                'high_24h': ticker.get('high') if ticker else None,
-                'low_24h': ticker.get('low') if ticker else None,
+                "symbol": symbol,
+                "current_price": current_price,
+                "price_change_pct": price_change_pct,
+                "volume_change_pct": volume_change_pct,
+                "current_volume": current_volume,
+                "volume_24h": volume_24h,
+                "bid": ticker.get("bid") if ticker else None,
+                "ask": ticker.get("ask") if ticker else None,
+                "high_24h": ticker.get("high") if ticker else None,
+                "low_24h": ticker.get("low") if ticker else None,
             }
 
         except Exception as e:
             logger.error(f"Error getting metrics for {symbol}: {e}")
             return None
 
-    def analyze_pump_pattern(self, symbol: str, pump_threshold: float,
-                           pump_hours_min: int, pump_hours_max: int,
-                           cooldown_hours_min: int, cooldown_hours_max: int,
-                           volume_decrease_threshold: float) -> Dict:
+    def analyze_pump_pattern(
+        self,
+        symbol: str,
+        pump_threshold: float,
+        pump_hours_min: int,
+        pump_hours_max: int,
+        cooldown_hours_min: int,
+        cooldown_hours_max: int,
+        volume_decrease_threshold: float,
+    ) -> Dict:
         """Analyze if symbol shows pump and cooldown pattern.
 
         Args:
@@ -142,16 +149,10 @@ class MarketData:
         metrics = self.get_symbol_metrics(symbol, pump_hours, cooldown_hours)
 
         if not metrics:
-            return {
-                'symbol': symbol,
-                'is_pump': False,
-                'is_cooldown': False,
-                'score': 0.0,
-                'reason': 'Insufficient data'
-            }
+            return {"symbol": symbol, "is_pump": False, "is_cooldown": False, "score": 0.0, "reason": "Insufficient data"}
 
-        price_change = metrics.get('price_change_pct', 0)
-        volume_change = metrics.get('volume_change_pct', 0)
+        price_change = metrics.get("price_change_pct", 0)
+        volume_change = metrics.get("volume_change_pct", 0)
 
         # Check if there was a pump
         is_pump = price_change >= pump_threshold
@@ -167,7 +168,7 @@ class MarketData:
             volume_score = min(abs(volume_change) / volume_decrease_threshold * 50, 50)
             score = price_score + volume_score
 
-        reason = ''
+        reason = ""
         if not is_pump:
             reason = f"Price change {price_change:.2f}% < {pump_threshold}%"
         elif not is_cooldown:
@@ -176,21 +177,28 @@ class MarketData:
             reason = f"Pump detected: +{price_change:.2f}%, Volume cooling: {volume_change:.2f}%"
 
         return {
-            'symbol': symbol,
-            'is_pump': is_pump,
-            'is_cooldown': is_cooldown,
-            'meets_criteria': is_pump and is_cooldown,
-            'score': round(score, 2),
-            'price_change_pct': round(price_change, 2),
-            'volume_change_pct': round(volume_change, 2),
-            'current_price': metrics['current_price'],
-            'volume_24h': metrics['volume_24h'],
-            'reason': reason
+            "symbol": symbol,
+            "is_pump": is_pump,
+            "is_cooldown": is_cooldown,
+            "meets_criteria": is_pump and is_cooldown,
+            "score": round(score, 2),
+            "price_change_pct": round(price_change, 2),
+            "volume_change_pct": round(volume_change, 2),
+            "current_price": metrics["current_price"],
+            "volume_24h": metrics["volume_24h"],
+            "reason": reason,
         }
 
-    def scan_market(self, pump_threshold: float, pump_hours_min: int, pump_hours_max: int,
-                   cooldown_hours_min: int, cooldown_hours_max: int,
-                   volume_decrease_threshold: float, top_n: int = 30) -> List[Dict]:
+    def scan_market(
+        self,
+        pump_threshold: float,
+        pump_hours_min: int,
+        pump_hours_max: int,
+        cooldown_hours_min: int,
+        cooldown_hours_max: int,
+        volume_decrease_threshold: float,
+        top_n: int = 30,
+    ) -> List[Dict]:
         """Scan market for symbols matching criteria.
 
         Returns: List of top N symbols sorted by score
@@ -212,14 +220,14 @@ class MarketData:
                 pump_hours_max=pump_hours_max,
                 cooldown_hours_min=cooldown_hours_min,
                 cooldown_hours_max=cooldown_hours_max,
-                volume_decrease_threshold=volume_decrease_threshold
+                volume_decrease_threshold=volume_decrease_threshold,
             )
 
-            if analysis.get('meets_criteria'):
+            if analysis.get("meets_criteria"):
                 results.append(analysis)
 
         # Sort by score descending
-        results.sort(key=lambda x: x['score'], reverse=True)
+        results.sort(key=lambda x: x["score"], reverse=True)
 
         # Take top N
         top_results = results[:top_n]
