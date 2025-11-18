@@ -292,7 +292,7 @@ class BinanceClient:
         try:
             # Create buy market order to close short (with SHORT position side for hedge mode)
             order = self.create_market_order(symbol, "buy", quantity, position_side="SHORT")
-            if order:
+            if order and "error_code" not in order:
                 logger.info(f"Closed short position: {symbol}, Quantity: {quantity}")
             return order
         except Exception as e:
