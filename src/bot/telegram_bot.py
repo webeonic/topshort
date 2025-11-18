@@ -117,6 +117,12 @@ class TelegramBot:
 📊 Signals found: {scan_result['signals_found']}
 ✅ Positions opened: {scan_result['positions_opened']}
 """
+        # Add signal symbols if signals were found
+        if scan_result.get("signals_found", 0) > 0 and scan_result.get("signals"):
+            message += "\n📈 Signal pairs:\n"
+            for signal in scan_result["signals"]:
+                message += f"  • {signal['symbol']}\n"
+
         if scan_result.get("positions_opened", 0) > 0:
             message += "\n🟢 New positions:\n"
             for pos in scan_result.get("opened_positions", []):

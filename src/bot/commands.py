@@ -380,6 +380,12 @@ The bot automatically scans the market every hour and opens short positions on c
 📊 Signals found: {result['signals_found']}
 ✅ Positions opened: {result['positions_opened']}
 """
+            # Add signal symbols if signals were found
+            if result.get("signals_found", 0) > 0 and result.get("signals"):
+                message += "\n📈 Signal pairs:\n"
+                for signal in result["signals"]:
+                    message += f"  • {signal['symbol']}\n"
+
             await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:

@@ -311,6 +311,12 @@ class CallbackHandler:
 📊 Signals found: {result['signals_found']}
 ✅ Positions opened: {result['positions_opened']}
 """
+        # Add signal symbols if signals were found
+        if result.get("signals_found", 0) > 0 and result.get("signals"):
+            message += "\n📈 Signal pairs:\n"
+            for signal in result["signals"]:
+                message += f"  • {signal['symbol']}\n"
+
         await query.edit_message_text(message, parse_mode="Markdown")
 
     @log_callback(success=True)
