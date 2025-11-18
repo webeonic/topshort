@@ -15,6 +15,57 @@ from ..trading.engine import TradingEngine
 logger = logging.getLogger(__name__)
 
 
+def log_callback(success: bool = True):
+    """Decorator to log callback interactions."""
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+            start_time = time.time()
+            query = update.callback_query
+            user_id = str(query.from_user.id)
+            chat_id = str(query.message.chat_id)
+            username = query.from_user.username
+
+            try:
+                result = await func(self, update, context)
+                response_time = int((time.time() - start_time) * 1000)
+
+                self.callback_log_repo.log(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    callback_data=query.data,
+                    action=func.__name__,
+                    username=username,
+                    success=True,
+                    response_time_ms=response_time,
+                )
+
+                return result
+
+            except Exception as e:
+                response_time = int((time.time() - start_time) * 1000)
+                logger.error(f"Error in callback handler {func.__name__}: {e}")
+
+                self.callback_log_repo.log(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    callback_data=query.data,
+                    action=func.__name__,
+                    username=username,
+                    success=False,
+                    error_message=str(e),
+                    response_time_ms=response_time,
+                )
+
+                await query.answer("❌ Error occurred. Please try again.", show_alert=True)
+                raise
+
+        return wrapper
+
+    return decorator
+
+
 class CallbackHandler:
     """Handle callback queries from inline keyboards."""
 
@@ -69,56 +120,6 @@ class CallbackHandler:
         """Register a callback handler for pattern match."""
         self.handlers[f"pattern:{pattern}"] = handler
         logger.debug(f"Registered pattern callback handler: {pattern}")
-
-    def log_callback(self, success: bool = True):
-        """Decorator to log callback interactions."""
-
-        def decorator(func):
-            @wraps(func)
-            async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-                start_time = time.time()
-                query = update.callback_query
-                user_id = str(query.from_user.id)
-                chat_id = str(query.message.chat_id)
-                username = query.from_user.username
-
-                try:
-                    result = await func(update, context)
-                    response_time = int((time.time() - start_time) * 1000)
-
-                    self.callback_log_repo.log(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        callback_data=query.data,
-                        action=func.__name__,
-                        username=username,
-                        success=True,
-                        response_time_ms=response_time,
-                    )
-
-                    return result
-
-                except Exception as e:
-                    response_time = int((time.time() - start_time) * 1000)
-                    logger.error(f"Error in callback handler {func.__name__}: {e}")
-
-                    self.callback_log_repo.log(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        callback_data=query.data,
-                        action=func.__name__,
-                        username=username,
-                        success=False,
-                        error_message=str(e),
-                        response_time_ms=response_time,
-                    )
-
-                    await query.answer("❌ Error occurred. Please try again.", show_alert=True)
-                    raise
-
-            return wrapper
-
-        return decorator
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Main callback query handler that routes to specific handlers."""
