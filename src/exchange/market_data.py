@@ -1,7 +1,10 @@
 """Market data fetching and analysis."""
 
 import logging
+import os
 import statistics
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -15,6 +18,33 @@ class MarketData:
 
     def __init__(self, client: BinanceClient):
         self.client = client
+
+    def _calculate_optimal_workers(self, total_symbols: int) -> int:
+        """Calculate optimal number of parallel workers dynamically.
+
+        Args:
+            total_symbols: Total number of symbols to process
+
+        Returns: Optimal number of workers
+        """
+        if total_symbols <= 0:
+            # Still need at least one worker for ThreadPoolExecutor,
+            # even if there are no symbols to process.
+            return 1
+
+        # Get CPU count, default to 4 if can't detect
+        cpu_count = os.cpu_count() or 4
+
+        # Use 2-3x CPU count for I/O bound tasks (API calls)
+        # But cap at reasonable limits to avoid rate limiting
+        max_workers = min(
+            cpu_count * 3,  # I/O bound optimal
+            50,  # Don't overwhelm the API
+            total_symbols,  # No point having more workers than symbols
+        )
+
+        # Minimum of 4 workers for reasonable parallelization, but not more than symbols
+        return min(max(4, max_workers), total_symbols)
 
     def calculate_price_change(self, ohlcv: List[List], hours: int) -> Optional[float]:
         """Calculate price change percentage over specified hours.
@@ -67,13 +97,16 @@ class MarketData:
         volume_change_pct = ((avg_recent_volume - avg_older_volume) / avg_older_volume) * 100
         return volume_change_pct
 
-    def get_symbol_metrics(self, symbol: str, pump_hours: int = 72, cooldown_hours: int = 8) -> Optional[Dict]:
+    def get_symbol_metrics(
+        self, symbol: str, pump_hours: int = 72, cooldown_hours: int = 8, ticker: Optional[Dict] = None
+    ) -> Optional[Dict]:
         """Get comprehensive metrics for a symbol.
 
         Args:
             symbol: Trading symbol
             pump_hours: Hours to check for pump (48-72)
             cooldown_hours: Hours to check for cooldown (4-8)
+            ticker: Optional pre-fetched ticker data
 
         Returns: Dict with metrics or None
         """
@@ -99,8 +132,9 @@ class MarketData:
             # Calculate 24h volume
             volume_24h = sum(candle[5] for candle in ohlcv[-24:])
 
-            # Get ticker for additional data
-            ticker = self.client.get_ticker(symbol)
+            # Get ticker for additional data if not provided
+            if ticker is None:
+                ticker = self.client.get_ticker(symbol)
 
             return {
                 "symbol": symbol,
@@ -128,6 +162,7 @@ class MarketData:
         cooldown_hours_min: int,
         cooldown_hours_max: int,
         volume_decrease_threshold: float,
+        ticker: Optional[Dict] = None,
     ) -> Dict:
         """Analyze if symbol shows pump and cooldown pattern.
 
@@ -139,6 +174,7 @@ class MarketData:
             cooldown_hours_min: Minimum hours for cooldown (e.g., 4)
             cooldown_hours_max: Maximum hours for cooldown (e.g., 8)
             volume_decrease_threshold: Volume decrease threshold (e.g., 20%)
+            ticker: Optional pre-fetched ticker data
 
         Returns: Dict with analysis results
         """
@@ -146,7 +182,7 @@ class MarketData:
         pump_hours = (pump_hours_min + pump_hours_max) // 2
         cooldown_hours = (cooldown_hours_min + cooldown_hours_max) // 2
 
-        metrics = self.get_symbol_metrics(symbol, pump_hours, cooldown_hours)
+        metrics = self.get_symbol_metrics(symbol, pump_hours, cooldown_hours, ticker=ticker)
 
         if not metrics:
             return {"symbol": symbol, "is_pump": False, "is_cooldown": False, "score": 0.0, "reason": "Insufficient data"}
@@ -199,32 +235,70 @@ class MarketData:
         volume_decrease_threshold: float,
         top_n: int = 30,
     ) -> List[Dict]:
-        """Scan market for symbols matching criteria.
+        """Scan market for symbols matching criteria using parallel processing.
 
         Returns: List of top N symbols sorted by score
         """
-        logger.info("Starting market scan...")
+        start_time = time.time()
+        logger.info("Starting parallel market scan...")
 
         symbols = self.client.get_usdt_perpetual_symbols()
-        logger.info(f"Scanning {len(symbols)} USDT perpetual symbols")
+        total_symbols = len(symbols)
+
+        # Calculate optimal number of workers dynamically
+        max_workers = self._calculate_optimal_workers(total_symbols)
+        logger.info(f"Scanning {total_symbols} USDT perpetual symbols with {max_workers} parallel workers")
+
+        # Pre-fetch all tickers in batch (much faster than individual calls)
+        ticker_start = time.time()
+        logger.info("Fetching tickers in batch...")
+        tickers_map = self.client.fetch_tickers(symbols)
+        ticker_duration = time.time() - ticker_start
+        logger.info(f"Fetched {len(tickers_map)} tickers in batch (took {ticker_duration:.2f}s)")
 
         results = []
-        for i, symbol in enumerate(symbols):
-            if i % 50 == 0:
-                logger.info(f"Scanned {i}/{len(symbols)} symbols...")
+        processed = 0
 
-            analysis = self.analyze_pump_pattern(
-                symbol=symbol,
-                pump_threshold=pump_threshold,
-                pump_hours_min=pump_hours_min,
-                pump_hours_max=pump_hours_max,
-                cooldown_hours_min=cooldown_hours_min,
-                cooldown_hours_max=cooldown_hours_max,
-                volume_decrease_threshold=volume_decrease_threshold,
-            )
+        def analyze_symbol(symbol: str) -> Optional[Dict]:
+            """Analyze a single symbol (used in parallel executor)."""
+            try:
+                # Get pre-fetched ticker for this symbol
+                ticker = tickers_map.get(symbol)
 
-            if analysis.get("meets_criteria"):
-                results.append(analysis)
+                return self.analyze_pump_pattern(
+                    symbol=symbol,
+                    pump_threshold=pump_threshold,
+                    pump_hours_min=pump_hours_min,
+                    pump_hours_max=pump_hours_max,
+                    cooldown_hours_min=cooldown_hours_min,
+                    cooldown_hours_max=cooldown_hours_max,
+                    volume_decrease_threshold=volume_decrease_threshold,
+                    ticker=ticker,
+                )
+            except Exception as e:
+                logger.error(f"Error analyzing {symbol}: {e}")
+                return None
+
+        # Process symbols in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_symbol = {executor.submit(analyze_symbol, symbol): symbol for symbol in symbols}
+
+            # Process completed tasks
+            for future in as_completed(future_to_symbol):
+                processed += 1
+
+                # Log progress every 50 symbols
+                if processed % 50 == 0:
+                    logger.info(f"Processed {processed}/{total_symbols} symbols...")
+
+                try:
+                    analysis = future.result()
+                    if analysis and analysis.get("meets_criteria"):
+                        results.append(analysis)
+                except Exception as e:
+                    symbol = future_to_symbol[future]
+                    logger.error(f"Error processing {symbol}: {e}")
 
         # Sort by score descending
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -232,6 +306,16 @@ class MarketData:
         # Take top N
         top_results = results[:top_n]
 
-        logger.info(f"Market scan completed: Found {len(results)} matching symbols, returning top {len(top_results)}")
+        # Calculate performance metrics
+        total_duration = time.time() - start_time
+        avg_time_per_symbol = total_duration / total_symbols if total_symbols > 0 else 0
+
+        logger.info(
+            f"Parallel market scan completed: "
+            f"Processed {total_symbols} symbols in {total_duration:.2f}s "
+            f"({avg_time_per_symbol:.3f}s per symbol), "
+            f"found {len(results)} matching, "
+            f"returning top {len(top_results)}"
+        )
 
         return top_results
