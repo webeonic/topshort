@@ -40,6 +40,7 @@ def mock_client():
     client.create_limit_order = Mock()
     client.get_ticker = Mock()
     client.fetch_tickers = Mock()
+    client.get_position_by_symbol = Mock()
     return client
 
 
@@ -218,7 +219,8 @@ class TestClosePosition:
         db_session.add(position)
         db_session.commit()
 
-        # Mock exchange response
+        # Mock exchange response - position exists
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
         mock_client.close_short_position.return_value = {"average": 47500.0}
 
         result = position_manager.close_position(position.id, "take_profit")
@@ -272,6 +274,7 @@ class TestClosePosition:
         db_session.add(position)
         db_session.commit()
 
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
         mock_client.close_short_position.return_value = None
 
         result = position_manager.close_position(position.id, "manual")
@@ -292,6 +295,7 @@ class TestClosePosition:
         db_session.add(position)
         db_session.commit()
 
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
         mock_client.close_short_position.return_value = {"id": "CLOSE123"}
         mock_client.get_ticker.return_value = {"last": 48500.0}
 
@@ -300,6 +304,95 @@ class TestClosePosition:
         # Should use ticker price as fallback
         assert result is not None
         assert result["exit_price"] == 48500.0
+
+    def test_close_position_already_closed_on_exchange(self, position_manager, mock_client, db_session):
+        """Test syncing position when it's already closed on exchange."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Position doesn't exist on exchange
+        mock_client.get_position_by_symbol.return_value = None
+        mock_client.get_ticker.return_value = {"last": 47500.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        # Should sync and close in database
+        assert result is not None
+        assert result["symbol"] == "BTCUSDT"
+        assert result["exit_price"] == 47500.0
+        assert result["reason"] == "take_profit_sync"
+        assert result.get("synced") is True
+
+        # Verify position was closed in database
+        updated = db_session.query(Position).filter_by(id=position.id).first()
+        assert updated.status == "closed"
+
+    def test_close_position_zero_amount_on_exchange(self, position_manager, mock_client, db_session):
+        """Test syncing position when exchange shows zero amount."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Position has zero amount on exchange
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "0"}
+        mock_client.get_ticker.return_value = {"last": 47500.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        # Should sync and close in database
+        assert result is not None
+        assert result.get("synced") is True
+        assert result["reason"] == "take_profit_sync"
+
+    def test_close_position_reduce_only_error(self, position_manager, mock_client, db_session):
+        """Test handling ReduceOnly error (position already closed)."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Position exists on exchange check, but close order fails with error -2022
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
+        mock_client.close_short_position.return_value = {"error_code": -2022, "message": "Position already closed"}
+        mock_client.get_ticker.return_value = {"last": 47500.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        # Should detect error and sync
+        assert result is not None
+        assert result.get("synced") is True
+        assert result["reason"] == "take_profit_sync"
+
+        # Verify position was closed in database
+        updated = db_session.query(Position).filter_by(id=position.id).first()
+        assert updated.status == "closed"
 
 
 class TestMonitorPositions:
@@ -328,6 +421,7 @@ class TestMonitorPositions:
 
         # Mock current price at TP
         mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 47500.0}}
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
         mock_client.close_short_position.return_value = {"average": 47500.0}
 
         closed = position_manager.monitor_positions()
@@ -395,6 +489,7 @@ class TestMonitorPositions:
 
         # Mock BTC at TP, ETH above TP
         mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 47500.0}, "ETHUSDT": {"last": 2900.0}}
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
         mock_client.close_short_position.return_value = {"average": 47500.0}
 
         closed = position_manager.monitor_positions()
@@ -507,6 +602,7 @@ class TestClosePositionBySymbol:
         db_session.add(position)
         db_session.commit()
 
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
         mock_client.close_short_position.return_value = {"average": 47500.0}
 
         result = position_manager.close_position_by_symbol("BTCUSDT", "manual")

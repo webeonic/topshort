@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Union
 from sqlalchemy.orm import Session
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 
+from ..database.models import KeyboardButton
 from ..database.repository import KeyboardButtonRepository, KeyboardStateRepository, KeyboardTemplateRepository
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ class KeyboardBuilder:
             return None
 
         # Get buttons for this template
-        buttons = self.button_repo.get_by_template(template.id)
+        buttons: List[KeyboardButton] = self.button_repo.get_by_template(template.id)
         if not buttons:
             logger.warning(f"No buttons found for template: {template_name}")
             return None
@@ -122,14 +123,14 @@ class KeyboardBuilder:
             return None
 
         # Get buttons for this template
-        buttons = self.button_repo.get_by_template(template.id)
+        buttons: List[KeyboardButton] = self.button_repo.get_by_template(template.id)
         if not buttons:
             logger.warning(f"No buttons found for template: {template_name}")
             return None
 
         # Build keyboard structure (list of text strings for reply keyboard)
-        keyboard = []
-        current_row = []
+        keyboard: List[List[str]] = []
+        current_row: List[str] = []
         last_row = -1
 
         for button in buttons:
@@ -153,11 +154,11 @@ class KeyboardBuilder:
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=resize_keyboard, one_time_keyboard=one_time_keyboard)
 
     def _build_keyboard_structure(
-        self, buttons: List, dynamic_data: Optional[Dict] = None
+        self, buttons: List[KeyboardButton], dynamic_data: Optional[Dict] = None
     ) -> List[List[InlineKeyboardButton]]:
         """Build keyboard structure from button list."""
-        keyboard = []
-        current_row = []
+        keyboard: List[List[InlineKeyboardButton]] = []
+        current_row: List[InlineKeyboardButton] = []
         last_row = -1
 
         for button in buttons:

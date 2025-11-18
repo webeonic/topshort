@@ -4,9 +4,9 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker, validates
+from sqlalchemy.orm import DeclarativeMeta, relationship, sessionmaker, validates
 
-Base = declarative_base()
+Base: DeclarativeMeta = declarative_base()
 
 
 class Settings(Base):

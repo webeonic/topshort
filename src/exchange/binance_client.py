@@ -192,6 +192,15 @@ class BinanceClient:
             order = self.exchange.create_order(symbol=symbol, type="market", side=side, amount=quantity, params=params)
             logger.info(f"Created market {side} order for {quantity} {symbol}: {order.get('id')}")
             return order
+        except ccxt.ExchangeError as e:
+            error_msg = str(e)
+            # Check for specific error codes
+            if "-2022" in error_msg or "ReduceOnly Order is rejected" in error_msg:
+                logger.warning(f"ReduceOnly order rejected for {symbol} - position likely already closed")
+                # Return a special marker to indicate position doesn't exist
+                return {"error_code": -2022, "message": "Position already closed"}
+            logger.error(f"Error creating market order for {symbol}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Error creating market order for {symbol}: {e}")
             return None
@@ -283,7 +292,8 @@ class BinanceClient:
         try:
             # Create buy market order to close short (with SHORT position side for hedge mode)
             order = self.create_market_order(symbol, "buy", quantity, position_side="SHORT")
-            logger.info(f"Closed short position: {symbol}, Quantity: {quantity}")
+            if order:
+                logger.info(f"Closed short position: {symbol}, Quantity: {quantity}")
             return order
         except Exception as e:
             logger.error(f"Error closing short position for {symbol}: {e}")

@@ -1,6 +1,7 @@
 """Pytest configuration and shared fixtures."""
 
 import logging
+import os
 from typing import Generator
 from unittest.mock import MagicMock, Mock
 
@@ -10,6 +11,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.config import TradingConfig
 from src.database.models import Base
+
+# Set up test environment variables (must be before other imports that use them)
+os.environ["TELEGRAM_AUTHORIZED_USERS"] = "12345,67890"
 
 # Configure logging for tests
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -274,3 +278,176 @@ def log_test_duration(request):
     duration = time.time() - start
     if duration > 1.0:  # Log slow tests
         logging.warning(f"Slow test: {request.node.nodeid} took {duration:.2f}s")
+
+
+# ===== Telegram Bot Fixtures =====
+
+
+@pytest.fixture
+def mock_telegram_user():
+    """Create mock Telegram user."""
+    from unittest.mock import AsyncMock, Mock
+
+    from telegram import User
+
+    user = Mock(spec=User)
+    user.id = 12345
+    user.username = "testuser"
+    user.first_name = "Test"
+    user.last_name = "User"
+    user.is_bot = False
+    return user
+
+
+@pytest.fixture
+def mock_telegram_message():
+    """Create mock Telegram message."""
+    from datetime import datetime
+    from unittest.mock import AsyncMock
+
+    from telegram import Message
+
+    message = AsyncMock(spec=Message)
+    message.message_id = 1
+    message.chat_id = 123456789
+    message.text = "/test"
+    message.date = datetime.now()
+    return message
+
+
+@pytest.fixture
+def mock_telegram_update(mock_telegram_user, mock_telegram_message):
+    """Create mock Telegram update."""
+    from unittest.mock import Mock
+
+    from telegram import Update
+
+    update = Mock(spec=Update)
+    update.update_id = 123456
+    update.effective_user = mock_telegram_user
+    update.effective_message = mock_telegram_message
+    update.message = mock_telegram_message
+    return update
+
+
+@pytest.fixture
+def mock_callback_query_update(mock_telegram_user, mock_telegram_message):
+    """Create mock Telegram update with callback query."""
+    from unittest.mock import AsyncMock, Mock
+
+    from telegram import CallbackQuery, Update
+
+    update = Mock(spec=Update)
+    update.update_id = 123456
+    update.effective_user = mock_telegram_user
+    update.effective_message = mock_telegram_message
+
+    query = Mock(spec=CallbackQuery)
+    query.id = "query_123"
+    query.from_user = mock_telegram_user
+    query.message = mock_telegram_message
+    query.data = "test_callback"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    query.edit_message_reply_markup = AsyncMock()
+
+    update.callback_query = query
+
+    return update
+
+
+@pytest.fixture
+def mock_telegram_context():
+    """Create mock Telegram context."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    context = MagicMock()
+    context.args = []
+    context.bot = AsyncMock()
+    context.bot_data = {}
+    context.user_data = {}
+    context.chat_data = {}
+    return context
+
+
+@pytest.fixture
+def mock_bot_status():
+    """Create mock bot status."""
+    from datetime import datetime
+    from unittest.mock import MagicMock
+
+    status = MagicMock()
+    status.id = 1
+    status.is_active = True
+    status.is_paused = False
+    status.started_at = datetime(2024, 1, 1, 10, 0, 0)
+    status.total_positions_opened = 10
+    status.total_positions_closed = 8
+    status.total_pnl = 150.0
+    status.last_scan_at = datetime(2024, 1, 1, 11, 0, 0)
+    return status
+
+
+@pytest.fixture
+def mock_trading_engine():
+    """Create mock trading engine with common return values."""
+    from unittest.mock import MagicMock
+
+    engine = MagicMock()
+
+    # Status
+    engine.get_status.return_value = {
+        "risk_summary": {
+            "current_positions": 5,
+            "max_positions": 10,
+            "current_margin": 500.0,
+            "max_margin": 1000.0,
+            "positions_utilization_pct": 50.0,
+            "margin_utilization_pct": 50.0,
+        }
+    }
+
+    # Positions
+    engine.position_manager.get_all_open_positions.return_value = [
+        {
+            "symbol": "BTCUSDT",
+            "entry_price": 50000.0,
+            "current_price": 49000.0,
+            "take_profit_price": 48000.0,
+            "leverage": 10,
+            "margin": 100.0,
+            "unrealized_pnl": 100.0,
+            "unrealized_pnl_pct": 10.0,
+            "opened_at": "2024-01-01 10:00:00",
+        }
+    ]
+
+    engine.position_manager.get_position_by_symbol.return_value = {
+        "symbol": "BTCUSDT",
+        "entry_price": 50000.0,
+        "current_price": 49000.0,
+        "take_profit_price": 48000.0,
+        "leverage": 10,
+        "margin": 100.0,
+        "unrealized_pnl": 100.0,
+        "unrealized_pnl_pct": 10.0,
+        "opened_at": "2024-01-01 10:00:00",
+    }
+
+    engine.position_manager.close_position_by_symbol.return_value = {
+        "symbol": "BTCUSDT",
+        "entry_price": 50000.0,
+        "exit_price": 49000.0,
+        "pnl": 100.0,
+        "pnl_pct": 10.0,
+    }
+
+    engine.position_manager.update_positions = MagicMock()
+
+    # Scan and trade
+    engine.execute_scan_and_trade.return_value = {"signals_found": 5, "positions_opened": 2}
+
+    # Close all
+    engine.close_all_positions.return_value = {"positions_closed": 3, "total_positions": 3}
+
+    return engine

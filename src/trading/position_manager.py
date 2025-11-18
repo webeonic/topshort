@@ -2,7 +2,7 @@
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -202,12 +202,80 @@ class PositionManager:
 
             logger.info(f"Closing position {position_id}: {position.symbol}, Reason={reason}")
 
+            # Check if position exists on exchange before attempting to close
+            exchange_position = self.client.get_position_by_symbol(position.symbol)
+
+            # If no position exists on exchange (already closed manually or by TP order)
+            if not exchange_position or float(exchange_position.get("positionAmt", 0)) == 0:
+                logger.warning(
+                    f"Position {position_id} ({position.symbol}) not found on exchange - "
+                    f"likely already closed manually or by limit order. Syncing database..."
+                )
+                # Get current price for P&L calculation
+                ticker = self.client.get_ticker(position.symbol)
+                exit_price = ticker["last"] if ticker else position.current_price
+
+                # Close position in database with reason indicating it was already closed
+                closed_position = self.position_repo.close(position_id, exit_price, f"{reason}_sync")
+
+                # Update bot statistics
+                self.bot_status_repo.increment_closed(closed_position.pnl)
+
+                logger.info(
+                    f"Position synced: {position.symbol}, "
+                    f"Entry={position.entry_price:.4f}, "
+                    f"Exit={exit_price:.4f}, "
+                    f"P&L={closed_position.pnl:.2f} USDT ({closed_position.pnl_pct:.2f}%)"
+                )
+
+                return {
+                    "position_id": position_id,
+                    "symbol": position.symbol,
+                    "entry_price": position.entry_price,
+                    "exit_price": exit_price,
+                    "pnl": closed_position.pnl,
+                    "pnl_pct": closed_position.pnl_pct,
+                    "reason": f"{reason}_sync",
+                    "synced": True,
+                }
+
             # Close position on exchange
             order = self.client.close_short_position(position.symbol, position.quantity)
 
             if not order:
                 logger.error(f"Failed to close position {position_id}")
                 return None
+
+            # Check if order indicates position was already closed (error code -2022)
+            if isinstance(order, dict) and order.get("error_code") == -2022:
+                logger.warning(f"Position {position_id} ({position.symbol}) already closed on exchange. Syncing database...")
+                # Get current price for P&L calculation
+                ticker = self.client.get_ticker(position.symbol)
+                exit_price = ticker["last"] if ticker else position.current_price
+
+                # Close position in database
+                closed_position = self.position_repo.close(position_id, exit_price, f"{reason}_sync")
+
+                # Update bot statistics
+                self.bot_status_repo.increment_closed(closed_position.pnl)
+
+                logger.info(
+                    f"Position synced: {position.symbol}, "
+                    f"Entry={position.entry_price:.4f}, "
+                    f"Exit={exit_price:.4f}, "
+                    f"P&L={closed_position.pnl:.2f} USDT ({closed_position.pnl_pct:.2f}%)"
+                )
+
+                return {
+                    "position_id": position_id,
+                    "symbol": position.symbol,
+                    "entry_price": position.entry_price,
+                    "exit_price": exit_price,
+                    "pnl": closed_position.pnl,
+                    "pnl_pct": closed_position.pnl_pct,
+                    "reason": f"{reason}_sync",
+                    "synced": True,
+                }
 
             # Get exit price from order
             exit_price = float(order.get("average", 0) or order.get("price", 0))
@@ -298,41 +366,7 @@ class PositionManager:
     def get_all_open_positions(self) -> List[Dict]:
         """Get all open positions with current prices."""
         positions = self.position_repo.get_all_open()
-        result = []
-
-        for pos in positions:
-            # Calculate unrealized P&L using Decimal for precision
-            if pos.current_price and pos.entry_price:
-                # For short: P&L = (entry - current) * quantity
-                entry = Decimal(str(pos.entry_price))
-                current = Decimal(str(pos.current_price))
-                qty = Decimal(str(pos.quantity))
-
-                unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                unrealized_pnl_pct = float(
-                    (((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                )
-            else:
-                unrealized_pnl = 0
-                unrealized_pnl_pct = 0
-
-            result.append(
-                {
-                    "id": pos.id,
-                    "symbol": pos.symbol,
-                    "entry_price": pos.entry_price,
-                    "current_price": pos.current_price,
-                    "quantity": pos.quantity,
-                    "margin": pos.margin,
-                    "leverage": pos.leverage,
-                    "take_profit_price": pos.take_profit_price,
-                    "unrealized_pnl": round(unrealized_pnl, 2),
-                    "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
-                    "opened_at": pos.opened_at.isoformat() if pos.opened_at else None,
-                }
-            )
-
-        return result
+        return [self._build_position_snapshot(pos) for pos in positions]
 
     def close_position_by_symbol(self, symbol: str, reason: str = "manual") -> Optional[Dict]:
         """Close position by symbol."""
@@ -342,3 +376,42 @@ class PositionManager:
             return None
 
         return self.close_position(position.id, reason)
+
+    def get_position_by_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Return a single position snapshot by symbol."""
+        position = self.position_repo.get_by_symbol(symbol)
+        if not position:
+            return None
+        return self._build_position_snapshot(position)
+
+    def update_positions(self) -> List[Dict]:
+        """Refresh open positions and return latest snapshots."""
+        self.monitor_positions()
+        return self.get_all_open_positions()
+
+    def _build_position_snapshot(self, position) -> Dict[str, Any]:
+        """Build a dictionary with position metrics for UI/API consumers."""
+        if position.current_price and position.entry_price:
+            entry = Decimal(str(position.entry_price))
+            current = Decimal(str(position.current_price))
+            qty = Decimal(str(position.quantity))
+
+            unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            unrealized_pnl_pct = float((((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        else:
+            unrealized_pnl = 0.0
+            unrealized_pnl_pct = 0.0
+
+        return {
+            "id": position.id,
+            "symbol": position.symbol,
+            "entry_price": position.entry_price,
+            "current_price": position.current_price,
+            "quantity": position.quantity,
+            "margin": position.margin,
+            "leverage": position.leverage,
+            "take_profit_price": position.take_profit_price,
+            "unrealized_pnl": round(unrealized_pnl, 2),
+            "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+            "opened_at": position.opened_at.isoformat() if position.opened_at else None,
+        }

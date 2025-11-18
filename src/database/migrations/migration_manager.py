@@ -4,12 +4,12 @@ This module handles automatic database migrations on application startup.
 Migrations are applied sequentially and tracked in the database.
 """
 
-import sqlite3
-import logging
-from pathlib import Path
-from typing import List, Dict, Optional
-from datetime import datetime
 import hashlib
+import logging
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -170,7 +170,7 @@ class MigrationManager:
 
             return False
 
-    def run_migrations(self, force: bool = False) -> Dict[str, any]:
+    def run_migrations(self, force: bool = False) -> Dict[str, Any]:
         """Run all pending migrations.
 
         Args:
@@ -248,7 +248,7 @@ class MigrationManager:
         finally:
             conn.close()
 
-    def get_migration_status(self) -> Dict[str, any]:
+    def get_migration_status(self) -> Dict[str, Any]:
         """Get current migration status.
 
         Returns:

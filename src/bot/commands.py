@@ -3,6 +3,7 @@
 import logging
 import os
 from functools import wraps
+from typing import Dict, TypedDict
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -32,7 +33,17 @@ class AuditLogger:
 audit = AuditLogger()
 
 # Allowed settings with their types and valid ranges
-ALLOWED_SETTINGS = {
+NumericCaster = type[int] | type[float]
+
+
+class SettingConfig(TypedDict):
+    type: NumericCaster
+    min: float
+    max: float
+    description: str
+
+
+ALLOWED_SETTINGS: Dict[str, SettingConfig] = {
     "margin_per_trade": {"type": float, "min": 1.0, "max": 10000.0, "description": "Margin per trade in USDT"},
     "max_positions": {"type": int, "min": 1, "max": 50, "description": "Maximum number of simultaneous positions"},
     "max_total_margin": {"type": float, "min": 10.0, "max": 100000.0, "description": "Maximum total margin in USDT"},
@@ -71,7 +82,7 @@ def require_auth(func):
                 f"User ID: {user_id}, Username: @{username}, "
                 f"Command: {func.__name__}"
             )
-            await update.message.reply_text(
+            await update.effective_message.reply_text(
                 "❌ *Access Denied*\n\n"
                 "You are not authorized to use this command.\n"
                 "Contact the administrator if you need access.",
@@ -126,9 +137,9 @@ The bot automatically scans the market every hour and opens short positions on c
         # Try to use keyboard from template, fallback to simple message
         keyboard = self.keyboard_builder.build_inline_keyboard_from_template("main_menu")
         if keyboard:
-            await update.message.reply_text(welcome_message, parse_mode="Markdown", reply_markup=keyboard)
+            await update.effective_message.reply_text(welcome_message, parse_mode="Markdown", reply_markup=keyboard)
         else:
-            await update.message.reply_text(welcome_message, parse_mode="Markdown")
+            await update.effective_message.reply_text(welcome_message, parse_mode="Markdown")
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
@@ -156,11 +167,11 @@ The bot automatically scans the market every hour and opens short positions on c
 📈 Slots utilization: {risk['positions_utilization_pct']:.1f}%
 💸 Margin utilization: {risk['margin_utilization_pct']:.1f}%
 """
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in status command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /positions command."""
@@ -168,7 +179,7 @@ The bot automatically scans the market every hour and opens short positions on c
             positions = self.engine.position_manager.get_all_open_positions()
 
             if not positions:
-                await update.message.reply_text("📭 No open positions")
+                await update.effective_message.reply_text("📭 No open positions")
                 return
 
             message = f"📊 *Open positions ({len(positions)}):*\n\n"
@@ -186,11 +197,11 @@ The bot automatically scans the market every hour and opens short positions on c
 
 """
 
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in positions command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /history command."""
@@ -198,7 +209,7 @@ The bot automatically scans the market every hour and opens short positions on c
             history = self.history_repo.get_recent(limit=10)
 
             if not history:
-                await update.message.reply_text("📭 Trade history is empty")
+                await update.effective_message.reply_text("📭 Trade history is empty")
                 return
 
             message = f"📜 *History of last {len(history)} trades:*\n\n"
@@ -215,11 +226,11 @@ The bot automatically scans the market every hour and opens short positions on c
 
 """
 
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in history command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command."""
@@ -227,7 +238,7 @@ The bot automatically scans the market every hour and opens short positions on c
             stats = self.history_repo.get_statistics()
 
             if stats["total_trades"] == 0:
-                await update.message.reply_text("📭 No statistics yet")
+                await update.effective_message.reply_text("📭 No statistics yet")
                 return
 
             win_emoji = "🟢" if stats["total_pnl"] > 0 else "🔴"
@@ -244,11 +255,11 @@ The bot automatically scans the market every hour and opens short positions on c
 💰 Average P&L: {stats['avg_pnl']:.2f} USDT
 📊 Average P&L %: {stats['avg_pnl_pct']:.2f}%
 """
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /settings command."""
@@ -262,18 +273,18 @@ The bot automatically scans the market every hour and opens short positions on c
 
             message += "\n💡 To change: /set <key> <value>"
 
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in settings command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth
     async def set_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /set command."""
         try:
             if len(context.args) < 2:
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     "Usage: /set <key> <value>\n"
                     "Example: /set margin_per_trade 150\n\n"
                     "Available settings:\n" + "\n".join(f"  • {k}: {v['description']}" for k, v in ALLOWED_SETTINGS.items())
@@ -285,7 +296,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
             # Validate key
             if key not in ALLOWED_SETTINGS:
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     f"❌ Invalid setting key: *{key}*\n\n"
                     "Available settings:\n" + "\n".join(f"  • {k}" for k in ALLOWED_SETTINGS.keys()),
                     parse_mode="Markdown",
@@ -299,10 +310,10 @@ The bot automatically scans the market every hour and opens short positions on c
 
             # Validate type and range
             try:
-                typed_value = expected_type(value_str)
+                typed_value: float | int = expected_type(value_str)
 
                 if not (min_val <= typed_value <= max_val):
-                    await update.message.reply_text(
+                    await update.effective_message.reply_text(
                         f"❌ Value out of range for *{key}*\n\n"
                         f"Value must be between {min_val} and {max_val}\n"
                         f"You provided: {typed_value}",
@@ -313,7 +324,7 @@ The bot automatically scans the market every hour and opens short positions on c
                 # Save validated setting
                 self.settings_repo.set(key, str(typed_value), setting_config["description"])
 
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     f"✅ Setting updated successfully\n\n" f"*{key}* = {typed_value}\n" f"_{setting_config['description']}_",
                     parse_mode="Markdown",
                 )
@@ -321,7 +332,7 @@ The bot automatically scans the market every hour and opens short positions on c
                 logger.info(f"Setting updated: {key}={typed_value} by user {update.effective_user.id}")
 
             except (ValueError, TypeError) as e:
-                await update.message.reply_text(
+                await update.effective_message.reply_text(
                     f"❌ Invalid value type for *{key}*\n\n"
                     f"Expected: {expected_type.__name__}\n"
                     f"You provided: {value_str}\n"
@@ -331,35 +342,35 @@ The bot automatically scans the market every hour and opens short positions on c
 
         except Exception as e:
             logger.error(f"Error in set command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth
     async def pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pause command."""
         try:
             self.bot_status_repo.set_paused(True)
-            await update.message.reply_text("⏸️ Trading paused")
+            await update.effective_message.reply_text("⏸️ Trading paused")
 
         except Exception as e:
             logger.error(f"Error in pause command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth
     async def resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /resume command."""
         try:
             self.bot_status_repo.set_paused(False)
-            await update.message.reply_text("▶️ Trading resumed")
+            await update.effective_message.reply_text("▶️ Trading resumed")
 
         except Exception as e:
             logger.error(f"Error in resume command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth
     async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scan command."""
         try:
-            await update.message.reply_text("🔍 Starting market scan...")
+            await update.effective_message.reply_text("🔍 Starting market scan...")
 
             result = self.engine.execute_scan_and_trade()
 
@@ -369,18 +380,18 @@ The bot automatically scans the market every hour and opens short positions on c
 📊 Signals found: {result['signals_found']}
 ✅ Positions opened: {result['positions_opened']}
 """
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in scan command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth
     async def close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /close command."""
         try:
             if not context.args:
-                await update.message.reply_text("Usage: /close <symbol>\nExample: /close BTC/USDT:USDT")
+                await update.effective_message.reply_text("Usage: /close <symbol>\nExample: /close BTC/USDT:USDT")
                 return
 
             symbol = context.args[0]
@@ -396,13 +407,13 @@ The bot automatically scans the market every hour and opens short positions on c
 💰 Exit: {result['exit_price']:.4f}
 {pnl_emoji} P&L: {result['pnl']:.2f} USDT ({result['pnl_pct']:.2f}%)
 """
-                await update.message.reply_text(message, parse_mode="Markdown")
+                await update.effective_message.reply_text(message, parse_mode="Markdown")
             else:
-                await update.message.reply_text(f"❌ Failed to close position {symbol}")
+                await update.effective_message.reply_text(f"❌ Failed to close position {symbol}")
 
         except Exception as e:
             logger.error(f"Error in close command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth
     async def closeall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,7 +424,7 @@ The bot automatically scans the market every hour and opens short positions on c
                 update.effective_user.id, update.effective_user.username or "unknown", "CLOSE_ALL_POSITIONS", {}
             )
 
-            await update.message.reply_text("🔄 Closing all positions...")
+            await update.effective_message.reply_text("🔄 Closing all positions...")
 
             result = self.engine.close_all_positions("manual")
 
@@ -422,11 +433,11 @@ The bot automatically scans the market every hour and opens short positions on c
 
 📊 Closed positions: {result['positions_closed']}/{result.get('total_positions', 0)}
 """
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in closeall command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def show_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /menu command - show main interactive menu."""
@@ -440,7 +451,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
 Choose an action from the buttons below:
 """
-                await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+                await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
             else:
                 # Fallback: create keyboard programmatically
                 buttons_data = KeyboardTemplates.main_menu()
@@ -451,8 +462,8 @@ Choose an action from the buttons below:
 
 Choose an action from the buttons below:
 """
-                await update.message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+                await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
         except Exception as e:
             logger.error(f"Error in show_menu command: {e}")
-            await update.message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")

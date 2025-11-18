@@ -102,7 +102,7 @@ class TradingEngine:
                 logger.error(f"Error saving signal for {signal['symbol']}: {e}")
 
         # Try to open positions
-        positions_opened = []
+        positions_opened: List[Dict] = []
         margin_per_trade = self.get_margin_per_trade()
         leverage = self.get_default_leverage()
 

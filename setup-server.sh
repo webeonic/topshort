@@ -11,7 +11,7 @@ echo "=========================================="
 echo ""
 
 # Check if running as root
-if [ "$EUID" -ne 0 ]; then 
+if [ "$EUID" -ne 0 ]; then
     echo "Please run as root (use: sudo -i)"
     exit 1
 fi
@@ -61,7 +61,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         adduser --disabled-password --gecos "" deployer
         usermod -aG sudo deployer
         usermod -aG docker deployer
-        
+
         # Setup SSH for deployer
         mkdir -p /home/deployer/.ssh
         if [ -f /root/.ssh/authorized_keys ]; then
@@ -123,7 +123,7 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "💾 Setting up backup script..."
     mkdir -p /opt/topshort/backups
-    
+
     cat > /opt/topshort/backup.sh << 'BACKUP_SCRIPT'
 #!/bin/bash
 BACKUP_DIR="/opt/topshort/backups"
@@ -132,9 +132,9 @@ DATE=$(date +%Y%m%d_%H%M%S)
 cp /opt/topshort/data/topshort.db $BACKUP_DIR/backup_$DATE.db 2>/dev/null || true
 find $BACKUP_DIR -name "backup_*.db" -mtime +7 -delete
 BACKUP_SCRIPT
-    
+
     chmod +x /opt/topshort/backup.sh
-    
+
     # Add to crontab
     (crontab -l 2>/dev/null; echo "0 3 * * * /opt/topshort/backup.sh") | crontab -
     echo "✅ Backup script created (runs daily at 3:00 AM)"
@@ -148,7 +148,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "🔑 Generating SSH key for GitHub Actions..."
     ssh-keygen -t ed25519 -C "github-actions" -f ~/.ssh/github_actions_key -N "" >/dev/null 2>&1 || true
     cat ~/.ssh/github_actions_key.pub >> ~/.ssh/authorized_keys
-    
+
     echo ""
     echo "=========================================="
     echo "GitHub Actions SSH Setup"
