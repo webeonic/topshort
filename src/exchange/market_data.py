@@ -27,6 +27,11 @@ class MarketData:
 
         Returns: Optimal number of workers
         """
+        if total_symbols <= 0:
+            # Still need at least one worker for ThreadPoolExecutor,
+            # even if there are no symbols to process.
+            return 1
+
         # Get CPU count, default to 4 if can't detect
         cpu_count = os.cpu_count() or 4
 

@@ -289,6 +289,13 @@ class TestOptimalWorkersCalculation:
             workers = market_data._calculate_optimal_workers(10)
             assert workers == 10
 
+    def test_workers_zero_symbols_returns_one(self, mock_binance_client_with_symbols):
+        """Ensure thread pool still has a worker when there are no symbols."""
+        market_data = MarketData(mock_binance_client_with_symbols)
+
+        workers = market_data._calculate_optimal_workers(0)
+        assert workers == 1
+
     def test_workers_minimum_enforced(self, mock_binance_client_with_symbols):
         """Test minimum workers is enforced."""
         market_data = MarketData(mock_binance_client_with_symbols)
