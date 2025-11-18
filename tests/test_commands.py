@@ -306,7 +306,7 @@ class TestSetSettingCommand:
     """Test /set command."""
 
     @pytest.mark.asyncio
-    @patch.dict(os.environ, {"TELEGRAM_AUTHORIZED_USERS": "12345"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_set_valid_setting(self, bot_commands, mock_update, mock_context):
         """Test setting a valid setting."""
         mock_context.args = ["margin_per_trade", "150"]
@@ -319,7 +319,7 @@ class TestSetSettingCommand:
         assert "Setting updated successfully" in message
 
     @pytest.mark.asyncio
-    @patch.dict(os.environ, {"TELEGRAM_AUTHORIZED_USERS": "12345"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_set_invalid_key(self, bot_commands, mock_update, mock_context):
         """Test setting with invalid key."""
         mock_context.args = ["invalid_key", "150"]
@@ -333,7 +333,7 @@ class TestSetSettingCommand:
         assert "Invalid setting key" in message
 
     @pytest.mark.asyncio
-    @patch.dict(os.environ, {"TELEGRAM_AUTHORIZED_USERS": "12345"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_set_out_of_range(self, bot_commands, mock_update, mock_context):
         """Test setting value out of range."""
         mock_context.args = ["margin_per_trade", "99999"]
@@ -347,7 +347,7 @@ class TestSetSettingCommand:
         assert "out of range" in message
 
     @pytest.mark.asyncio
-    @patch.dict(os.environ, {"TELEGRAM_AUTHORIZED_USERS": "12345"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_set_invalid_type(self, bot_commands, mock_update, mock_context):
         """Test setting with invalid type."""
         mock_context.args = ["margin_per_trade", "not_a_number"]
@@ -359,7 +359,7 @@ class TestSetSettingCommand:
         assert len(calls) >= 1
 
     @pytest.mark.asyncio
-    @patch.dict(os.environ, {"TELEGRAM_AUTHORIZED_USERS": "12345"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_set_missing_args(self, bot_commands, mock_update, mock_context):
         """Test /set with missing arguments."""
         mock_context.args = []
@@ -369,6 +369,20 @@ class TestSetSettingCommand:
         mock_update.effective_message.reply_text.assert_called_once()
         message = mock_update.effective_message.reply_text.call_args[0][0]
         assert "Usage" in message
+
+    @pytest.mark.asyncio
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"99999"})
+    async def test_set_blocks_unauthorized_user(self, bot_commands, mock_update, mock_context):
+        """Test /set blocks unauthorized user."""
+        mock_context.args = ["margin_per_trade", "150"]
+
+        await bot_commands.set_setting(mock_update, mock_context)
+
+        # Should return None and send access denied message
+        bot_commands.settings_repo.set.assert_not_called()
+        mock_update.effective_message.reply_text.assert_called_once()
+        message = mock_update.effective_message.reply_text.call_args[0][0]
+        assert "Access Denied" in message
 
 
 class TestPauseResumeCommands:

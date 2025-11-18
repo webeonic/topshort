@@ -307,4 +307,3 @@ async def test_authorized_user(bot_commands, mock_update, mock_context):
 - Правильно обрабатывает нажатия кнопок ✅
 - Полностью покрыт тестами ✅
 - Готов к production использованию ✅
-

@@ -7,7 +7,7 @@ when making trading decisions.
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypedDict
 
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,14 @@ from ..database.repository import PositionRepository, SettingsRepository
 from ..exchange.binance_client import BinanceClient
 
 logger = logging.getLogger(__name__)
+
+
+class PositionSyncStats(TypedDict, total=False):
+    total: int
+    new: int
+    existing: int
+    updated: int
+    error: str
 
 
 class ExchangePositionSync:
@@ -28,7 +36,7 @@ class ExchangePositionSync:
         self.position_repo = PositionRepository(session)
         self.settings_repo = SettingsRepository(session)
 
-    def sync_positions_from_exchange(self) -> Dict[str, int]:
+    def sync_positions_from_exchange(self) -> PositionSyncStats:
         """Sync all positions from exchange to database.
 
         Fetches all open positions from the exchange and creates database
@@ -51,7 +59,7 @@ class ExchangePositionSync:
 
             logger.info(f"Found {len(short_positions)} short positions on exchange")
 
-            stats = {"total": len(short_positions), "new": 0, "existing": 0, "updated": 0}
+            stats: PositionSyncStats = {"total": len(short_positions), "new": 0, "existing": 0, "updated": 0}
 
             for exchange_pos in short_positions:
                 symbol = exchange_pos.get("symbol")

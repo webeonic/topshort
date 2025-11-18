@@ -8,21 +8,21 @@ Example:
     python scripts/check_migrations.py data/topshort.db
 """
 
+import logging
 import sys
 from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from database.migrations.migration_manager import MigrationManager
-import logging
-
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 
 def main():
     """Check and display migration status."""
+    from database.migrations.migration_manager import MigrationManager
+
     if len(sys.argv) > 1:
         db_path = sys.argv[1]
     else:
@@ -46,16 +46,14 @@ def main():
         logger.info(f"Failed: {status['failed']}")
         logger.info("")
 
-        if status['migrations']:
+        if status["migrations"]:
             logger.info("Applied Migrations:")
             logger.info("-" * 70)
-            for migration in status['migrations']:
-                status_icon = "✓" if migration['success'] else "✗"
-                logger.info(
-                    f"{status_icon} {migration['version']}: {migration['name']}"
-                )
+            for migration in status["migrations"]:
+                status_icon = "✓" if migration["success"] else "✗"
+                logger.info(f"{status_icon} {migration['version']}: {migration['name']}")
                 logger.info(f"  Applied: {migration['applied_at']}")
-                if migration['execution_time_ms']:
+                if migration["execution_time_ms"]:
                     logger.info(f"  Time: {migration['execution_time_ms']}ms")
                 logger.info("")
         else:
@@ -63,7 +61,7 @@ def main():
 
         logger.info("=" * 70)
 
-        return 0 if status['failed'] == 0 else 1
+        return 0 if status["failed"] == 0 else 1
 
     except Exception as e:
         logger.error(f"❌ Error checking migration status: {e}")

@@ -2,7 +2,7 @@
 
 import logging
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -366,41 +366,7 @@ class PositionManager:
     def get_all_open_positions(self) -> List[Dict]:
         """Get all open positions with current prices."""
         positions = self.position_repo.get_all_open()
-        result = []
-
-        for pos in positions:
-            # Calculate unrealized P&L using Decimal for precision
-            if pos.current_price and pos.entry_price:
-                # For short: P&L = (entry - current) * quantity
-                entry = Decimal(str(pos.entry_price))
-                current = Decimal(str(pos.current_price))
-                qty = Decimal(str(pos.quantity))
-
-                unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-                unrealized_pnl_pct = float(
-                    (((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                )
-            else:
-                unrealized_pnl = 0
-                unrealized_pnl_pct = 0
-
-            result.append(
-                {
-                    "id": pos.id,
-                    "symbol": pos.symbol,
-                    "entry_price": pos.entry_price,
-                    "current_price": pos.current_price,
-                    "quantity": pos.quantity,
-                    "margin": pos.margin,
-                    "leverage": pos.leverage,
-                    "take_profit_price": pos.take_profit_price,
-                    "unrealized_pnl": round(unrealized_pnl, 2),
-                    "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
-                    "opened_at": pos.opened_at.isoformat() if pos.opened_at else None,
-                }
-            )
-
-        return result
+        return [self._build_position_snapshot(pos) for pos in positions]
 
     def close_position_by_symbol(self, symbol: str, reason: str = "manual") -> Optional[Dict]:
         """Close position by symbol."""
@@ -410,3 +376,42 @@ class PositionManager:
             return None
 
         return self.close_position(position.id, reason)
+
+    def get_position_by_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Return a single position snapshot by symbol."""
+        position = self.position_repo.get_by_symbol(symbol)
+        if not position:
+            return None
+        return self._build_position_snapshot(position)
+
+    def update_positions(self) -> List[Dict]:
+        """Refresh open positions and return latest snapshots."""
+        self.monitor_positions()
+        return self.get_all_open_positions()
+
+    def _build_position_snapshot(self, position) -> Dict[str, Any]:
+        """Build a dictionary with position metrics for UI/API consumers."""
+        if position.current_price and position.entry_price:
+            entry = Decimal(str(position.entry_price))
+            current = Decimal(str(position.current_price))
+            qty = Decimal(str(position.quantity))
+
+            unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            unrealized_pnl_pct = float((((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        else:
+            unrealized_pnl = 0.0
+            unrealized_pnl_pct = 0.0
+
+        return {
+            "id": position.id,
+            "symbol": position.symbol,
+            "entry_price": position.entry_price,
+            "current_price": position.current_price,
+            "quantity": position.quantity,
+            "margin": position.margin,
+            "leverage": position.leverage,
+            "take_profit_price": position.take_profit_price,
+            "unrealized_pnl": round(unrealized_pnl, 2),
+            "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
+            "opened_at": position.opened_at.isoformat() if position.opened_at else None,
+        }

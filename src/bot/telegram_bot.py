@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Optional
 
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
@@ -25,7 +26,7 @@ class TelegramBot:
         self.commands = BotCommands(session, engine)
         self.callback_handler = CallbackHandler(session, engine)
         self.keyboard_builder = KeyboardBuilder(session)
-        self.application = None
+        self.application: Optional[Application] = None
         self.chat_id = config.chat_id
         self._stop_event = asyncio.Event()
 
@@ -37,40 +38,43 @@ class TelegramBot:
         logger.info("Setting up Telegram bot")
 
         # Create application
-        self.application = Application.builder().token(self.config.bot_token).build()
+        app = Application.builder().token(self.config.bot_token).build()
+        self.application = app
 
         # Register command handlers
-        self.application.add_handler(CommandHandler("start", self.commands.start))
-        self.application.add_handler(CommandHandler("status", self.commands.status))
-        self.application.add_handler(CommandHandler("positions", self.commands.positions))
-        self.application.add_handler(CommandHandler("history", self.commands.history))
-        self.application.add_handler(CommandHandler("stats", self.commands.stats))
-        self.application.add_handler(CommandHandler("settings", self.commands.settings))
-        self.application.add_handler(CommandHandler("set", self.commands.set_setting))
-        self.application.add_handler(CommandHandler("pause", self.commands.pause))
-        self.application.add_handler(CommandHandler("resume", self.commands.resume))
-        self.application.add_handler(CommandHandler("scan", self.commands.scan))
-        self.application.add_handler(CommandHandler("close", self.commands.close))
-        self.application.add_handler(CommandHandler("closeall", self.commands.closeall))
-        self.application.add_handler(CommandHandler("help", self.commands.start))
-        self.application.add_handler(CommandHandler("menu", self.commands.show_menu))
+        app.add_handler(CommandHandler("start", self.commands.start))
+        app.add_handler(CommandHandler("status", self.commands.status))
+        app.add_handler(CommandHandler("positions", self.commands.positions))
+        app.add_handler(CommandHandler("history", self.commands.history))
+        app.add_handler(CommandHandler("stats", self.commands.stats))
+        app.add_handler(CommandHandler("settings", self.commands.settings))
+        app.add_handler(CommandHandler("set", self.commands.set_setting))
+        app.add_handler(CommandHandler("pause", self.commands.pause))
+        app.add_handler(CommandHandler("resume", self.commands.resume))
+        app.add_handler(CommandHandler("scan", self.commands.scan))
+        app.add_handler(CommandHandler("close", self.commands.close))
+        app.add_handler(CommandHandler("closeall", self.commands.closeall))
+        app.add_handler(CommandHandler("help", self.commands.start))
+        app.add_handler(CommandHandler("menu", self.commands.show_menu))
 
         # Register callback query handler for inline keyboards
-        self.application.add_handler(CallbackQueryHandler(self.callback_handler.handle_callback))
+        app.add_handler(CallbackQueryHandler(self.callback_handler.handle_callback))
 
         logger.info("Telegram bot handlers registered (commands + callbacks)")
 
     async def initialize(self):
         """Initialize the telegram application."""
         logger.info("Initializing Telegram application")
-        await self.application.initialize()
-        await self.application.start()
+        app = self._require_application()
+        await app.initialize()
+        await app.start()
 
     async def send_message(self, text: str, parse_mode: str = "Markdown"):
         """Send message to configured chat."""
         try:
-            if self.application and self.chat_id:
-                await self.application.bot.send_message(chat_id=self.chat_id, text=text, parse_mode=parse_mode)
+            app = self.application
+            if app and self.chat_id:
+                await app.bot.send_message(chat_id=self.chat_id, text=text, parse_mode=parse_mode)
                 logger.debug(f"Sent message to chat {self.chat_id}")
         except Exception as e:
             logger.error(f"Error sending message: {e}")
@@ -133,7 +137,8 @@ class TelegramBot:
         """Start bot polling."""
         logger.info("Starting Telegram bot polling")
         # Start the updater to begin polling
-        await self.application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        app = self._require_application()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
         # Keep the bot running until stop event is set
         logger.info("Bot is now polling for updates")
@@ -155,3 +160,8 @@ class TelegramBot:
                 await self.application.shutdown()
             except Exception as e:
                 logger.error(f"Error stopping bot: {e}")
+
+    def _require_application(self) -> Application:
+        if not self.application:
+            raise RuntimeError("Telegram application is not initialized. Call setup() first.")
+        return self.application

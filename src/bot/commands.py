@@ -3,6 +3,7 @@
 import logging
 import os
 from functools import wraps
+from typing import Dict, TypedDict
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -32,7 +33,17 @@ class AuditLogger:
 audit = AuditLogger()
 
 # Allowed settings with their types and valid ranges
-ALLOWED_SETTINGS = {
+NumericCaster = type[int] | type[float]
+
+
+class SettingConfig(TypedDict):
+    type: NumericCaster
+    min: float
+    max: float
+    description: str
+
+
+ALLOWED_SETTINGS: Dict[str, SettingConfig] = {
     "margin_per_trade": {"type": float, "min": 1.0, "max": 10000.0, "description": "Margin per trade in USDT"},
     "max_positions": {"type": int, "min": 1, "max": 50, "description": "Maximum number of simultaneous positions"},
     "max_total_margin": {"type": float, "min": 10.0, "max": 100000.0, "description": "Maximum total margin in USDT"},
@@ -299,7 +310,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
             # Validate type and range
             try:
-                typed_value = expected_type(value_str)
+                typed_value: float | int = expected_type(value_str)
 
                 if not (min_val <= typed_value <= max_val):
                     await update.effective_message.reply_text(
