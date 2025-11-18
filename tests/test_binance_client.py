@@ -69,3 +69,21 @@ class TestCloseShortPosition:
 
             assert result == error_dict
             assert result["error_code"] == -2022
+
+
+class TestExchangeInitialization:
+    """Tests for exchange initialization and configuration."""
+
+    def test_create_exchange_instance_sets_hedge_mode(self, binance_client, monkeypatch):
+        """Ensure each exchange instance configures hedge mode."""
+        captured = {}
+
+        def mock_set_hedge_mode(exchange=None):
+            captured["exchange"] = exchange
+            return True
+
+        monkeypatch.setattr(binance_client, "_set_hedge_mode", mock_set_hedge_mode)
+
+        exchange = binance_client._create_exchange_instance()
+
+        assert captured["exchange"] is exchange

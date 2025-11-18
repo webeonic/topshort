@@ -92,13 +92,16 @@ class MarketData:
         volume_change_pct = ((avg_recent_volume - avg_older_volume) / avg_older_volume) * 100
         return volume_change_pct
 
-    def get_symbol_metrics(self, symbol: str, pump_hours: int = 72, cooldown_hours: int = 8) -> Optional[Dict]:
+    def get_symbol_metrics(
+        self, symbol: str, pump_hours: int = 72, cooldown_hours: int = 8, ticker: Optional[Dict] = None
+    ) -> Optional[Dict]:
         """Get comprehensive metrics for a symbol.
 
         Args:
             symbol: Trading symbol
             pump_hours: Hours to check for pump (48-72)
             cooldown_hours: Hours to check for cooldown (4-8)
+            ticker: Optional pre-fetched ticker data
 
         Returns: Dict with metrics or None
         """
@@ -124,8 +127,9 @@ class MarketData:
             # Calculate 24h volume
             volume_24h = sum(candle[5] for candle in ohlcv[-24:])
 
-            # Get ticker for additional data
-            ticker = self.client.get_ticker(symbol)
+            # Get ticker for additional data if not provided
+            if ticker is None:
+                ticker = self.client.get_ticker(symbol)
 
             return {
                 "symbol": symbol,
@@ -153,6 +157,7 @@ class MarketData:
         cooldown_hours_min: int,
         cooldown_hours_max: int,
         volume_decrease_threshold: float,
+        ticker: Optional[Dict] = None,
     ) -> Dict:
         """Analyze if symbol shows pump and cooldown pattern.
 
@@ -164,6 +169,7 @@ class MarketData:
             cooldown_hours_min: Minimum hours for cooldown (e.g., 4)
             cooldown_hours_max: Maximum hours for cooldown (e.g., 8)
             volume_decrease_threshold: Volume decrease threshold (e.g., 20%)
+            ticker: Optional pre-fetched ticker data
 
         Returns: Dict with analysis results
         """
@@ -171,7 +177,7 @@ class MarketData:
         pump_hours = (pump_hours_min + pump_hours_max) // 2
         cooldown_hours = (cooldown_hours_min + cooldown_hours_max) // 2
 
-        metrics = self.get_symbol_metrics(symbol, pump_hours, cooldown_hours)
+        metrics = self.get_symbol_metrics(symbol, pump_hours, cooldown_hours, ticker=ticker)
 
         if not metrics:
             return {"symbol": symbol, "is_pump": False, "is_cooldown": False, "score": 0.0, "reason": "Insufficient data"}
@@ -251,6 +257,9 @@ class MarketData:
         def analyze_symbol(symbol: str) -> Optional[Dict]:
             """Analyze a single symbol (used in parallel executor)."""
             try:
+                # Get pre-fetched ticker for this symbol
+                ticker = tickers_map.get(symbol)
+
                 return self.analyze_pump_pattern(
                     symbol=symbol,
                     pump_threshold=pump_threshold,
@@ -259,6 +268,7 @@ class MarketData:
                     cooldown_hours_min=cooldown_hours_min,
                     cooldown_hours_max=cooldown_hours_max,
                     volume_decrease_threshold=volume_decrease_threshold,
+                    ticker=ticker,
                 )
             except Exception as e:
                 logger.error(f"Error analyzing {symbol}: {e}")

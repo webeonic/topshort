@@ -1,6 +1,7 @@
 """Binance client wrapper using CCXT."""
 
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -19,10 +20,35 @@ class BinanceClient:
 
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
         """Initialize Binance client."""
-        self.exchange = ccxt.binance(
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.testnet = testnet
+
+        # Thread-local storage for CCXT instances
+        self._local = threading.local()
+
+        # Initialize for main thread (and verify credentials/connection)
+        # This ensures we fail early if config is bad, and sets up initial state
+        self.exchange  # Access property to create instance
+
+        if testnet:
+            logger.info("Binance client initialized in TESTNET mode")
+        else:
+            logger.info("Binance client initialized in LIVE mode")
+
+    @property
+    def exchange(self):
+        """Get thread-local CCXT exchange instance."""
+        if not hasattr(self._local, "exchange"):
+            self._local.exchange = self._create_exchange_instance()
+        return self._local.exchange
+
+    def _create_exchange_instance(self):
+        """Create a new CCXT exchange instance."""
+        exchange = ccxt.binance(
             {
-                "apiKey": api_key,
-                "secret": api_secret,
+                "apiKey": self.api_key,
+                "secret": self.api_secret,
                 "options": {
                     "defaultType": "future",  # Use futures by default
                 },
@@ -30,23 +56,23 @@ class BinanceClient:
             }
         )
 
-        if testnet:
-            self.exchange.set_sandbox_mode(True)
-            logger.info("Binance client initialized in TESTNET mode")
-        else:
-            logger.info("Binance client initialized in LIVE mode")
+        if self.testnet:
+            exchange.set_sandbox_mode(True)
 
-        # Set position mode to hedge mode for short positions
-        self._set_hedge_mode()
+        # Ensure hedge mode is enabled for this specific exchange instance
+        self._set_hedge_mode(exchange)
 
-    def _set_hedge_mode(self) -> bool:
+        return exchange
+
+    def _set_hedge_mode(self, exchange: Optional[ccxt.binance] = None) -> bool:
         """Set position mode to hedge mode.
 
         This allows holding both LONG and SHORT positions simultaneously.
         Required for proper position side handling.
         """
+        client = exchange or self.exchange
         try:
-            response = self.exchange.fapiPrivatePostPositionSideDual({"dualSidePosition": "true"})
+            response = client.fapiPrivatePostPositionSideDual({"dualSidePosition": "true"})
             logger.info("Position mode set to HEDGE mode")
             return True
         except Exception as e:
