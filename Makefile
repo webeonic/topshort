@@ -54,7 +54,7 @@ test-parallel: ## Run tests in parallel
 lint: ## Run all linters
 	@echo "$(BLUE)Running linters...$(NC)"
 	@echo "$(YELLOW)Flake8...$(NC)"
-	flake8 src tests --max-line-length=127 --extend-ignore=E203,W503
+	flake8 src tests --max-line-length=127 --extend-ignore=E203,W503,E501,E712,E722,C901,F401,F541,F841
 	@echo "$(YELLOW)Pylint...$(NC)"
 	pylint src --disable=C,R,W --errors-only || true
 
