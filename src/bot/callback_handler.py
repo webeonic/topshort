@@ -154,12 +154,9 @@ class CallbackHandler:
 
         query = update.callback_query
 
-        # Create a mock update with the query's message
-        mock_update = Update(update.update_id)
-        mock_update._effective_message = query.message
-
+        # Use the effective_message directly instead of creating mock update
         commands = BotCommands(self.session, self.engine)
-        await commands.status(mock_update, context)
+        await commands.status(update, context)
 
     @log_callback(success=True)
     async def handle_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -168,11 +165,9 @@ class CallbackHandler:
 
         query = update.callback_query
 
-        mock_update = Update(update.update_id)
-        mock_update._effective_message = query.message
-
+        # Use the effective_message directly instead of creating mock update
         commands = BotCommands(self.session, self.engine)
-        await commands.positions(mock_update, context)
+        await commands.positions(update, context)
 
     @log_callback(success=True)
     async def handle_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,11 +176,9 @@ class CallbackHandler:
 
         query = update.callback_query
 
-        mock_update = Update(update.update_id)
-        mock_update._effective_message = query.message
-
+        # Use the effective_message directly instead of creating mock update
         commands = BotCommands(self.session, self.engine)
-        await commands.history(mock_update, context)
+        await commands.history(update, context)
 
     @log_callback(success=True)
     async def handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -194,11 +187,9 @@ class CallbackHandler:
 
         query = update.callback_query
 
-        mock_update = Update(update.update_id)
-        mock_update._effective_message = query.message
-
+        # Use the effective_message directly instead of creating mock update
         commands = BotCommands(self.session, self.engine)
-        await commands.stats(mock_update, context)
+        await commands.stats(update, context)
 
     @log_callback(success=True)
     async def handle_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,11 +198,9 @@ class CallbackHandler:
 
         query = update.callback_query
 
-        mock_update = Update(update.update_id)
-        mock_update._effective_message = query.message
-
+        # Use the effective_message directly instead of creating mock update
         commands = BotCommands(self.session, self.engine)
-        await commands.settings(mock_update, context)
+        await commands.settings(update, context)
 
     @log_callback(success=True)
     async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,11 +209,9 @@ class CallbackHandler:
 
         query = update.callback_query
 
-        mock_update = Update(update.update_id)
-        mock_update._effective_message = query.message
-
+        # Use the effective_message directly instead of creating mock update
         commands = BotCommands(self.session, self.engine)
-        await commands.start(mock_update, context)
+        await commands.start(update, context)
 
     @log_callback(success=True)
     async def handle_position_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

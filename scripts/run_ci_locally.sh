@@ -17,10 +17,21 @@ echo -e "${BLUE}║          Running CI Checks Locally                        �
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check if virtual environment is activated
+# Activate virtual environment if not already activated
 if [ -z "$VIRTUAL_ENV" ]; then
-    echo -e "${YELLOW}⚠ Warning: No virtual environment detected${NC}"
-    echo -e "${YELLOW}  Consider activating venv: source .venv/bin/activate${NC}"
+    if [ -f ".venv/bin/activate" ]; then
+        echo -e "${YELLOW}🔧 Activating virtual environment (.venv)${NC}"
+        source .venv/bin/activate
+        echo -e "${GREEN}✓ Virtual environment activated${NC}"
+        echo ""
+    else
+        echo -e "${RED}❌ Error: .venv not found${NC}"
+        echo -e "${YELLOW}  Create it with: python3 -m venv .venv${NC}"
+        echo -e "${YELLOW}  Then install deps: pip install -r requirements.txt${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}✓ Virtual environment already activated${NC}"
     echo ""
 fi
 
@@ -62,7 +73,15 @@ run_check "Linting (Flake8)" "flake8 src tests"
 run_check "Security Check (Bandit)" "bandit -r src -ll"
 
 # 6. Run Tests
-run_check "Unit Tests (Pytest)" "pytest tests/ --verbose --cov=src --cov-report=term-missing --cov-fail-under=30"
+echo -e "${BLUE}Running tests...${NC}"
+# Run all tests with appropriate coverage thresholds
+run_check "Unit Tests (Pytest)" "pytest tests/ --verbose --cov=src --cov-report=term-missing --cov-fail-under=40"
+
+# Optional: Run bot tests separately to verify comprehensive coverage
+if [ -f "tests/test_callback_handler.py" ]; then
+    echo -e "${BLUE}Running bot component tests...${NC}"
+    run_check "Bot Tests" "pytest tests/test_callback_handler.py tests/test_commands.py tests/test_keyboard_builder.py -v"
+fi
 
 # Summary
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
