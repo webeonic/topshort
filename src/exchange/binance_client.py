@@ -27,6 +27,10 @@ class BinanceClient:
         # Thread-local storage for CCXT instances
         self._local = threading.local()
 
+        # Track if hedge mode was already set (global flag)
+        self._hedge_mode_set = False
+        self._hedge_mode_lock = threading.Lock()
+
         # Initialize for main thread (and verify credentials/connection)
         # This ensures we fail early if config is bad, and sets up initial state
         self.exchange  # Access property to create instance
@@ -70,15 +74,30 @@ class BinanceClient:
         This allows holding both LONG and SHORT positions simultaneously.
         Required for proper position side handling.
         """
+        # Check if already set (thread-safe)
+        with self._hedge_mode_lock:
+            if self._hedge_mode_set:
+                return True  # Already set, no need to try again
+
         client = exchange or self.exchange
         try:
             response = client.fapiPrivatePostPositionSideDual({"dualSidePosition": "true"})
             logger.info("Position mode set to HEDGE mode")
+            with self._hedge_mode_lock:
+                self._hedge_mode_set = True
             return True
         except Exception as e:
             # If already in hedge mode, this will error but that's okay
-            logger.warning(f"Could not set hedge mode (might already be set): {e}")
-            return False
+            error_msg = str(e)
+            if "-4059" in error_msg or "No need to change position side" in error_msg:
+                # Already in hedge mode - success
+                with self._hedge_mode_lock:
+                    self._hedge_mode_set = True
+                logger.debug(f"Hedge mode already enabled: {e}")
+                return True
+            else:
+                logger.warning(f"Could not set hedge mode: {e}")
+                return False
 
     def load_markets(self) -> Dict[str, Any]:
         """Load all available markets."""

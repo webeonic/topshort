@@ -417,10 +417,11 @@ The bot automatically scans the market every hour and opens short positions on c
             # Track whether scan is complete
             scan_complete = False
             last_update_time = asyncio.get_event_loop().time()
+            last_message_text = ""  # Cache last message to avoid unnecessary updates
 
             async def update_progress_message():
                 """Periodically update the progress message."""
-                nonlocal last_update_time
+                nonlocal last_update_time, last_message_text
                 while not scan_complete:
                     try:
                         # Get current progress from database
@@ -443,15 +444,25 @@ The bot automatically scans the market every hour and opens short positions on c
                                 f"Signals found: {progress.signals_found}"
                             )
 
-                            try:
-                                await initial_message.edit_text(message, parse_mode="Markdown")
-                                last_update_time = current_time
-                            except Exception as e:
-                                # Ignore message not modified errors
-                                if "message is not modified" not in str(e).lower():
-                                    logger.error(f"Error updating progress message: {e}")
+                            # Only update if message text actually changed
+                            if message != last_message_text:
+                                try:
+                                    await initial_message.edit_text(message, parse_mode="Markdown")
+                                    last_message_text = message
+                                    last_update_time = current_time
+                                except Exception as e:
+                                    # Ignore all Telegram API errors related to message editing
+                                    error_msg = str(e).lower()
+                                    if "message is not modified" in error_msg or "bad request" in error_msg:
+                                        # These are expected errors, just cache the message
+                                        last_message_text = message
+                                    else:
+                                        logger.debug(f"Minor error updating progress message: {e}")
 
                         await asyncio.sleep(0.5)
+                    except asyncio.CancelledError:
+                        # Gracefully exit when task is cancelled
+                        break
                     except Exception as e:
                         logger.error(f"Error in progress update loop: {e}")
                         await asyncio.sleep(1)
@@ -473,6 +484,10 @@ The bot automatically scans the market every hour and opens short positions on c
                 await asyncio.wait_for(progress_task, timeout=2.0)
             except asyncio.TimeoutError:
                 progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
 
             # Send final summary message
             message = f"""
