@@ -9,8 +9,18 @@ from src.exchange.binance_client import BinanceClient
 
 
 @pytest.fixture
-def binance_client():
+def binance_client(monkeypatch):
     """Create BinanceClient instance for testing."""
+    # Prevent real CCXT initialization/network calls during tests
+    mock_exchange = Mock()
+    mock_exchange.set_sandbox_mode = Mock()
+    mock_exchange.fapiPrivatePostPositionSideDual = Mock(return_value={"dualSidePosition": True})
+
+    def mock_binance_constructor(*args, **kwargs):
+        return mock_exchange
+
+    monkeypatch.setattr("src.exchange.binance_client.ccxt.binance", mock_binance_constructor)
+
     # Use testnet mode with dummy credentials
     return BinanceClient(api_key="test_key", api_secret="test_secret", testnet=True)
 

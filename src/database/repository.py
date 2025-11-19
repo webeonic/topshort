@@ -18,6 +18,7 @@ from .models import (
     LimitOrder,
     MarketSignal,
     Position,
+    ScanProgress,
     Settings,
     TradeHistory,
 )
@@ -689,4 +690,150 @@ class CallbackLogRepository:
             "successful": successful,
             "failed": failed,
             "success_rate": (successful / total * 100) if total > 0 else 0,
+        }
+
+
+class ScanProgressRepository:
+    """Repository for scan progress operations."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(
+        self,
+        scan_id: str,
+        scan_type: str = "manual",
+        total_symbols: int = 0,
+        triggered_by: Optional[str] = None,
+        scan_params: Optional[Dict] = None,
+    ) -> ScanProgress:
+        """Create new scan progress record."""
+        progress = ScanProgress(
+            scan_id=scan_id,
+            scan_type=scan_type,
+            status="running",
+            total_symbols=total_symbols,
+            processed_symbols=0,
+            progress_pct=0.0,
+            signals_found=0,
+            positions_opened=0,
+            started_at=datetime.utcnow(),
+            triggered_by=triggered_by,
+            scan_params=json.dumps(scan_params) if scan_params else None,
+        )
+        self.session.add(progress)
+        self.session.commit()
+        return progress
+
+    def get(self, scan_id: str) -> Optional[ScanProgress]:
+        """Get scan progress by ID."""
+        return self.session.query(ScanProgress).filter_by(scan_id=scan_id).first()
+
+    def update_progress(self, scan_id: str, processed_symbols: int, signals_found: int = None) -> Optional[ScanProgress]:
+        """Update scan progress."""
+        progress = self.get(scan_id)
+        if not progress:
+            return None
+
+        progress.processed_symbols = processed_symbols
+        if progress.total_symbols > 0:
+            progress.progress_pct = (processed_symbols / progress.total_symbols) * 100.0
+        else:
+            progress.progress_pct = 0.0
+
+        if signals_found is not None:
+            progress.signals_found = signals_found
+
+        progress.updated_at = datetime.utcnow()
+        self.session.commit()
+        return progress
+
+    def complete(
+        self, scan_id: str, signals_found: int, positions_opened: int = 0, error_message: Optional[str] = None
+    ) -> Optional[ScanProgress]:
+        """Mark scan as completed."""
+        progress = self.get(scan_id)
+        if not progress:
+            return None
+
+        progress.status = "failed" if error_message else "completed"
+        progress.completed_at = datetime.utcnow()
+        progress.signals_found = signals_found
+        progress.positions_opened = positions_opened
+        progress.error_message = error_message
+        progress.progress_pct = 100.0
+
+        # Calculate duration
+        if progress.started_at:
+            duration = (progress.completed_at - progress.started_at).total_seconds()
+            progress.duration_seconds = duration
+
+        progress.updated_at = datetime.utcnow()
+        self.session.commit()
+        return progress
+
+    def cancel(self, scan_id: str) -> Optional[ScanProgress]:
+        """Cancel a running scan."""
+        progress = self.get(scan_id)
+        if not progress:
+            return None
+
+        progress.status = "cancelled"
+        progress.completed_at = datetime.utcnow()
+
+        if progress.started_at:
+            duration = (progress.completed_at - progress.started_at).total_seconds()
+            progress.duration_seconds = duration
+
+        progress.updated_at = datetime.utcnow()
+        self.session.commit()
+        return progress
+
+    def get_active_scan(self, scan_type: Optional[str] = None) -> Optional[ScanProgress]:
+        """Get currently running scan."""
+        query = self.session.query(ScanProgress).filter_by(status="running")
+        if scan_type:
+            query = query.filter_by(scan_type=scan_type)
+        return query.order_by(desc(ScanProgress.started_at)).first()
+
+    def get_recent(self, limit: int = 10) -> List[ScanProgress]:
+        """Get recent scans."""
+        return self.session.query(ScanProgress).order_by(desc(ScanProgress.started_at)).limit(limit).all()
+
+    def get_user_scans(self, user_id: str, limit: int = 10) -> List[ScanProgress]:
+        """Get recent scans for a specific user."""
+        return (
+            self.session.query(ScanProgress)
+            .filter_by(triggered_by=user_id)
+            .order_by(desc(ScanProgress.started_at))
+            .limit(limit)
+            .all()
+        )
+
+    def get_statistics(self, days: int = 7) -> Dict:
+        """Get scan statistics for the last N days."""
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        scans = self.session.query(ScanProgress).filter(ScanProgress.started_at >= cutoff).all()
+
+        total = len(scans)
+        completed = sum(1 for s in scans if s.status == "completed")
+        failed = sum(1 for s in scans if s.status == "failed")
+        running = sum(1 for s in scans if s.status == "running")
+
+        total_signals = sum(s.signals_found for s in scans if s.status == "completed")
+        total_positions = sum(s.positions_opened for s in scans if s.status == "completed")
+
+        avg_duration = None
+        completed_scans = [s for s in scans if s.status == "completed" and s.duration_seconds]
+        if completed_scans:
+            avg_duration = sum(s.duration_seconds for s in completed_scans) / len(completed_scans)
+
+        return {
+            "total_scans": total,
+            "completed": completed,
+            "failed": failed,
+            "running": running,
+            "total_signals_found": total_signals,
+            "total_positions_opened": total_positions,
+            "avg_duration_seconds": avg_duration,
         }
