@@ -413,12 +413,24 @@ class TestScanCommand:
     @pytest.mark.asyncio
     @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_scan_executes_scan(self, bot_commands, mock_update, mock_context):
-        """Test scan command executes market scan."""
+        """Test scan command executes market scan with progress bar."""
+        # Mock the message object returned by reply_text
+        mock_message = AsyncMock()
+        mock_message.edit_text = AsyncMock()
+        mock_update.effective_message.reply_text.return_value = mock_message
+
         await bot_commands.scan(mock_update, mock_context)
 
+        # Verify scan was executed
         bot_commands.engine.execute_scan_and_trade.assert_called_once()
-        # Should be called twice: once for starting, once for result
-        assert mock_update.effective_message.reply_text.call_count == 2
+
+        # Verify initial message was sent
+        mock_update.effective_message.reply_text.assert_called_once()
+        initial_message = mock_update.effective_message.reply_text.call_args[0][0]
+        assert "Starting market scan" in initial_message
+
+        # Verify final message was edited
+        assert mock_message.edit_text.called
 
 
 class TestCloseCommand:

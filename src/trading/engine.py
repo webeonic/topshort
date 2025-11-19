@@ -2,12 +2,13 @@
 
 import logging
 import threading
+import uuid
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from ..config import Config
-from ..database.repository import MarketSignalRepository, SettingsRepository
+from ..database.repository import MarketSignalRepository, ScanProgressRepository, SettingsRepository
 from ..exchange.binance_client import BinanceClient
 from ..exchange.market_data import MarketData
 from ..strategy.scanner import MarketScanner
@@ -34,6 +35,7 @@ class TradingEngine:
         # Repositories
         self.settings_repo = SettingsRepository(session)
         self.signal_repo = MarketSignalRepository(session)
+        self.scan_progress_repo = ScanProgressRepository(session)
 
         # Thread safety - locks for preventing race conditions
         self._position_locks: Dict[str, threading.Lock] = {}
@@ -55,14 +57,51 @@ class TradingEngine:
                 self._position_locks[symbol] = threading.Lock()
             return self._position_locks[symbol]
 
-    def execute_scan_and_trade(self, max_signals: int = 30) -> Dict:
+    def execute_scan_and_trade(
+        self, max_signals: int = 30, scan_id: Optional[str] = None, triggered_by: Optional[str] = None
+    ) -> Dict:
         """Execute market scan and open positions.
+
+        Args:
+            max_signals: Maximum number of signals to process
+            scan_id: Optional scan ID for progress tracking
+            triggered_by: Optional user_id or 'scheduler' for audit tracking
 
         Returns: Dict with execution results
         """
         logger.info("=" * 80)
         logger.info("Starting scan and trade cycle")
         logger.info("=" * 80)
+
+        # Generate scan_id if not provided
+        if not scan_id:
+            scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+
+        # Determine scan type
+        scan_type = "manual" if triggered_by and triggered_by != "scheduler" else "scheduled"
+
+        # Get total symbols count for progress tracking
+        try:
+            symbols = self.client.get_usdt_perpetual_symbols()
+            total_symbols = len(symbols)
+        except Exception as e:
+            logger.error(f"Error getting symbols count: {e}")
+            total_symbols = 200  # Fallback estimate
+
+        # Update or create progress tracking record
+        try:
+            existing_progress = self.scan_progress_repo.get(scan_id)
+            if existing_progress:
+                # Update total symbols if already created by command handler
+                existing_progress.total_symbols = total_symbols
+                self.session.commit()
+            else:
+                # Create new progress record
+                self.scan_progress_repo.create(
+                    scan_id=scan_id, scan_type=scan_type, total_symbols=total_symbols, triggered_by=triggered_by
+                )
+        except Exception as e:
+            logger.error(f"Error creating scan progress: {e}")
 
         # Get risk summary
         risk_summary = self.risk_manager.get_risk_summary()
@@ -74,14 +113,40 @@ class TradingEngine:
         # Check if we can open any positions
         if risk_summary["available_slots"] == 0:
             logger.info("No available position slots")
-            return {"success": True, "signals_found": 0, "positions_opened": 0, "reason": "No available position slots"}
+            return {
+                "success": True,
+                "scan_id": scan_id,
+                "signals_found": 0,
+                "positions_opened": 0,
+                "reason": "No available position slots",
+            }
 
-        # Scan market for opportunities
-        signals = self.scanner.scan(top_n=max_signals)
+        # Define progress callback
+        def progress_callback(processed: int, total: int, signals_found: int):
+            """Update scan progress in database."""
+            try:
+                self.scan_progress_repo.update_progress(scan_id, processed, signals_found)
+            except Exception as e:
+                logger.error(f"Error updating scan progress: {e}")
+
+        # Scan market for opportunities with progress tracking
+        signals = self.scanner.scan(top_n=max_signals, progress_callback=progress_callback)
 
         if not signals:
             logger.info("No trading signals found")
-            return {"success": True, "signals_found": 0, "positions_opened": 0, "reason": "No signals found"}
+            # Complete scan progress
+            try:
+                self.scan_progress_repo.complete(scan_id, signals_found=0, positions_opened=0)
+            except Exception as e:
+                logger.error(f"Error completing scan progress: {e}")
+
+            return {
+                "success": True,
+                "scan_id": scan_id,
+                "signals_found": 0,
+                "positions_opened": 0,
+                "reason": "No signals found",
+            }
 
         logger.info(f"Found {len(signals)} trading signals")
 
@@ -149,8 +214,15 @@ class TradingEngine:
         )
         logger.info("=" * 80)
 
+        # Complete scan progress
+        try:
+            self.scan_progress_repo.complete(scan_id, signals_found=len(signals), positions_opened=len(positions_opened))
+        except Exception as e:
+            logger.error(f"Error completing scan progress: {e}")
+
         return {
             "success": True,
+            "scan_id": scan_id,
             "signals_found": len(signals),
             "positions_opened": len(positions_opened),
             "signals": signals[:5],  # Return top 5 signals

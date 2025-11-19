@@ -1,14 +1,22 @@
 """Telegram bot command handlers."""
 
+import asyncio
 import logging
 import os
+import uuid
 from functools import wraps
 from typing import Dict, TypedDict
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from ..database.repository import BotStatusRepository, MarketSignalRepository, SettingsRepository, TradeHistoryRepository
+from ..database.repository import (
+    BotStatusRepository,
+    MarketSignalRepository,
+    ScanProgressRepository,
+    SettingsRepository,
+    TradeHistoryRepository,
+)
 from ..trading.engine import TradingEngine
 from .keyboard_builder import KeyboardBuilder, KeyboardTemplates
 
@@ -106,6 +114,7 @@ class BotCommands:
         self.history_repo = TradeHistoryRepository(session)
         self.bot_status_repo = BotStatusRepository(session)
         self.signal_repo = MarketSignalRepository(session)
+        self.scan_progress_repo = ScanProgressRepository(session)
         self.keyboard_builder = KeyboardBuilder(session)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,14 +375,106 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in resume command: {e}")
             await update.effective_message.reply_text(f"❌ Error: {e}")
 
+    def _format_progress_bar(self, progress_pct: float, width: int = 20) -> str:
+        """Format a progress bar for Telegram.
+
+        Args:
+            progress_pct: Progress percentage (0-100)
+            width: Width of the progress bar in characters
+
+        Returns: Formatted progress bar string
+        """
+        filled = int(width * progress_pct / 100)
+        empty = width - filled
+        bar = "█" * filled + "░" * empty
+        return f"[{bar}] {progress_pct:.1f}%"
+
     @require_auth
     async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /scan command."""
+        """Handle /scan command with real-time progress updates."""
         try:
-            await update.effective_message.reply_text("🔍 Starting market scan...")
+            # Generate unique scan ID
+            scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+            user_id = str(update.effective_user.id)
 
-            result = self.engine.execute_scan_and_trade()
+            # Initialize scan progress in database
+            # First get total symbols count (rough estimate for initial creation)
+            total_symbols = 200  # Rough estimate, will be updated
 
+            self.scan_progress_repo.create(
+                scan_id=scan_id, scan_type="manual", total_symbols=total_symbols, triggered_by=user_id
+            )
+
+            # Send initial message
+            initial_message = await update.effective_message.reply_text(
+                "🔍 *Starting market scan...*\n\n"
+                f"{self._format_progress_bar(0)}\n"
+                "Processed: 0/~200 symbols\n"
+                "Signals found: 0",
+                parse_mode="Markdown",
+            )
+
+            # Track whether scan is complete
+            scan_complete = False
+            last_update_time = asyncio.get_event_loop().time()
+
+            async def update_progress_message():
+                """Periodically update the progress message."""
+                nonlocal last_update_time
+                while not scan_complete:
+                    try:
+                        # Get current progress from database
+                        progress = self.scan_progress_repo.get(scan_id)
+                        if not progress:
+                            await asyncio.sleep(0.5)
+                            continue
+
+                        current_time = asyncio.get_event_loop().time()
+
+                        # Update message every 1 second to avoid rate limits
+                        if current_time - last_update_time >= 1.0:
+                            progress_bar = self._format_progress_bar(progress.progress_pct)
+
+                            status_emoji = "🔍" if progress.status == "running" else "✅"
+                            message = (
+                                f"{status_emoji} *Market scan in progress...*\n\n"
+                                f"{progress_bar}\n"
+                                f"Processed: {progress.processed_symbols}/{progress.total_symbols} symbols\n"
+                                f"Signals found: {progress.signals_found}"
+                            )
+
+                            try:
+                                await initial_message.edit_text(message, parse_mode="Markdown")
+                                last_update_time = current_time
+                            except Exception as e:
+                                # Ignore message not modified errors
+                                if "message is not modified" not in str(e).lower():
+                                    logger.error(f"Error updating progress message: {e}")
+
+                        await asyncio.sleep(0.5)
+                    except Exception as e:
+                        logger.error(f"Error in progress update loop: {e}")
+                        await asyncio.sleep(1)
+
+            # Start progress update task
+            progress_task = asyncio.create_task(update_progress_message())
+
+            # Execute scan in thread pool (blocking operation)
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: self.engine.execute_scan_and_trade(max_signals=30, scan_id=scan_id, triggered_by=user_id)
+            )
+
+            # Mark scan as complete
+            scan_complete = True
+
+            # Wait for progress task to finish
+            try:
+                await asyncio.wait_for(progress_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                progress_task.cancel()
+
+            # Send final summary message
             message = f"""
 ✅ *Scan completed*
 
@@ -386,10 +487,15 @@ The bot automatically scans the market every hour and opens short positions on c
                 for signal in result["signals"]:
                     message += f"  • {signal['symbol']}\n"
 
-            await update.effective_message.reply_text(message, parse_mode="Markdown")
+            # Update the message with final results
+            try:
+                await initial_message.edit_text(message, parse_mode="Markdown")
+            except Exception:
+                # If edit fails, send a new message
+                await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in scan command: {e}")
+            logger.error(f"Error in scan command: {e}", exc_info=True)
             await update.effective_message.reply_text(f"❌ Error: {e}")
 
     @require_auth

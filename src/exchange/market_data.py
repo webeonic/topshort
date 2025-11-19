@@ -4,9 +4,10 @@ import logging
 import os
 import statistics
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .binance_client import BinanceClient
 
@@ -234,8 +235,19 @@ class MarketData:
         cooldown_hours_max: int,
         volume_decrease_threshold: float,
         top_n: int = 30,
+        progress_callback: Optional[Callable[[int, int, int], None]] = None,
     ) -> List[Dict]:
         """Scan market for symbols matching criteria using parallel processing.
+
+        Args:
+            pump_threshold: Minimum pump percentage
+            pump_hours_min: Minimum pump period hours
+            pump_hours_max: Maximum pump period hours
+            cooldown_hours_min: Minimum cooldown period hours
+            cooldown_hours_max: Maximum cooldown period hours
+            volume_decrease_threshold: Volume decrease threshold
+            top_n: Number of top results to return
+            progress_callback: Optional callback(processed, total, signals_found) for progress updates
 
         Returns: List of top N symbols sorted by score
         """
@@ -288,10 +300,6 @@ class MarketData:
             for future in as_completed(future_to_symbol):
                 processed += 1
 
-                # Log progress every 50 symbols
-                if processed % 50 == 0:
-                    logger.info(f"Processed {processed}/{total_symbols} symbols...")
-
                 try:
                     analysis = future.result()
                     if analysis and analysis.get("meets_criteria"):
@@ -299,6 +307,17 @@ class MarketData:
                 except Exception as e:
                     symbol = future_to_symbol[future]
                     logger.error(f"Error processing {symbol}: {e}")
+
+                # Call progress callback every 10 symbols or at key milestones
+                if progress_callback and (processed % 10 == 0 or processed == total_symbols or processed in [50, 100, 150]):
+                    try:
+                        progress_callback(processed, total_symbols, len(results))
+                    except Exception as e:
+                        logger.error(f"Error in progress callback: {e}")
+
+                # Log progress every 50 symbols
+                if processed % 50 == 0:
+                    logger.info(f"Processed {processed}/{total_symbols} symbols... (found {len(results)} signals)")
 
         # Sort by score descending
         results.sort(key=lambda x: x["score"], reverse=True)

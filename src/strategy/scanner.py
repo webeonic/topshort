@@ -1,7 +1,7 @@
 """Market scanner for finding trading opportunities."""
 
 import logging
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from ..config import ScannerConfig
 from ..exchange.market_data import MarketData
@@ -18,8 +18,12 @@ class MarketScanner:
         self.config = config
         self.detector = PumpDetector(market_data, config)
 
-    def scan(self, top_n: int = 30) -> List[Dict]:
+    def scan(self, top_n: int = 30, progress_callback: Optional[Callable[[int, int, int], None]] = None) -> List[Dict]:
         """Scan market and return top N opportunities.
+
+        Args:
+            top_n: Number of top opportunities to return
+            progress_callback: Optional callback(processed, total, signals_found) for progress updates
 
         Returns: List of dicts with symbol analysis, sorted by score
         """
@@ -33,6 +37,7 @@ class MarketScanner:
             cooldown_hours_max=self.config.cooldown_period_hours_max,
             volume_decrease_threshold=self.config.volume_decrease_threshold_pct,
             top_n=top_n,
+            progress_callback=progress_callback,
         )
 
         logger.info(f"Market scan completed: Found {len(results)} opportunities")

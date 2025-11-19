@@ -303,6 +303,64 @@ class CallbackLog(Base):
         return f"<CallbackLog(user='{self.user_id}', action='{self.action}', success={self.success})>"
 
 
+class ScanProgress(Base):
+    """Track real-time progress of market scans."""
+
+    __tablename__ = "scan_progress"
+
+    id = Column(Integer, primary_key=True)
+    scan_id = Column(String(100), unique=True, nullable=False, index=True)
+    scan_type = Column(String(20), nullable=False, default="manual", index=True)  # 'manual', 'scheduled', 'on_demand'
+    status = Column(String(20), nullable=False, default="running", index=True)  # 'running', 'completed', 'failed', 'cancelled'
+
+    # Progress tracking
+    total_symbols = Column(Integer, nullable=False, default=0)
+    processed_symbols = Column(Integer, nullable=False, default=0)
+    progress_pct = Column(Float, nullable=False, default=0.0)
+
+    # Results
+    signals_found = Column(Integer, nullable=False, default=0)
+    positions_opened = Column(Integer, nullable=False, default=0)
+
+    # Timing
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    # Error tracking
+    error_message = Column(Text, nullable=True)
+
+    # Metadata
+    triggered_by = Column(String(50), nullable=True, index=True)  # user_id or 'scheduler'
+    scan_params = Column(Text, nullable=True)  # JSON with scan parameters
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Composite index
+    __table_args__ = (Index("idx_scan_type_status", "scan_type", "status"),)
+
+    @validates("scan_type")
+    def validate_scan_type(self, key, value):
+        """Validate scan type."""
+        valid_types = ["manual", "scheduled", "on_demand"]
+        if value not in valid_types:
+            raise ValueError(f"Invalid scan type: {value}. Must be one of {valid_types}")
+        return value
+
+    @validates("status")
+    def validate_status(self, key, value):
+        """Validate status."""
+        valid_statuses = ["running", "completed", "failed", "cancelled"]
+        if value not in valid_statuses:
+            raise ValueError(f"Invalid status: {value}. Must be one of {valid_statuses}")
+        return value
+
+    def __repr__(self):
+        return f"<ScanProgress(scan_id='{self.scan_id}', status='{self.status}', progress={self.progress_pct:.1f}%)>"
+
+
 def create_database(database_url: str, auto_migrate: bool = True):
     """Create database and all tables with automatic migrations.
 
