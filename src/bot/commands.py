@@ -135,6 +135,7 @@ Automatic trading bot for short positions on Binance Futures.
 /pause - Pause trading
 /resume - Resume trading
 /scan - Start market scan manually
+/pairs - Show top pairs universe
 /close - Close position by symbol
 /closeall - Close all positions
 /help - Help with commands
@@ -197,9 +198,11 @@ The bot automatically scans the market every hour and opens short positions on c
                 pnl_emoji = "🟢" if pos["unrealized_pnl"] > 0 else "🔴"
                 message += f"""
 *{pos['symbol']}*
+🧭 Side: {pos.get('side', 'short').upper()}
 💰 Entry: {pos['entry_price']:.4f}
 📈 Current: {pos['current_price']:.4f}
 🎯 TP: {pos['take_profit_price']:.4f}
+🛑 SL: {pos.get('stop_loss_price', 0) or '—'}
 📊 Leverage: {pos['leverage']}x
 💵 Margin: {pos['margin']:.2f} USDT
 {pnl_emoji} P&L: {pos['unrealized_pnl']:.2f} USDT ({pos['unrealized_pnl_pct']:.2f}%)
@@ -268,6 +271,48 @@ The bot automatically scans the market every hour and opens short positions on c
 
         except Exception as e:
             logger.error(f"Error in stats command: {e}")
+            await update.effective_message.reply_text(f"❌ Error: {e}")
+
+    async def top_pairs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /pairs command to show current trading universe."""
+        try:
+            if not getattr(self.engine, "top_pairs_service", None):
+                await update.effective_message.reply_text("⚠️ Top pairs service is not available")
+                return
+
+            force_refresh = bool(context.args and context.args[0].lower() in {"refresh", "update"})
+            if force_refresh:
+                pairs = await asyncio.to_thread(self.engine.top_pairs_service.refresh)
+            else:
+                pairs = self.engine.top_pairs_service.get_pairs()
+
+            meta = self.engine.top_pairs_service.get_metadata()
+            if not pairs:
+                await update.effective_message.reply_text("📭 No pairs available yet, please try again later.")
+                return
+
+            max_preview = 25
+            preview = pairs[:max_preview]
+            remaining = len(pairs) - len(preview)
+
+            header = (
+                f"🏆 *Top {len(pairs)} USDT pairs*\n"
+                f"Source: {meta.get('source', 'n/a')} ({meta.get('last_updated', 'unknown')})\n"
+            )
+            body = "\n".join(f"{idx + 1}. `{symbol}`" for idx, symbol in enumerate(preview))
+            if remaining > 0:
+                body += f"\n...and {remaining} more"
+
+            footer = ""
+            if force_refresh:
+                footer = "\n🔄 Cache refreshed on demand."
+            elif meta.get("source") == "fallback":
+                footer = "\n⚠️ Currently using fallback list."
+
+            await update.effective_message.reply_text(header + "\n" + body + footer, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(f"Error in pairs command: {e}")
             await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -393,6 +438,14 @@ The bot automatically scans the market every hour and opens short positions on c
     async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scan command with real-time progress updates."""
         try:
+            requested_mode = None
+            if context.args:
+                strategy_arg = context.args[0].lower()
+                if strategy_arg in {"ob", "orderblock", "order_block", "smc"}:
+                    requested_mode = "order_block"
+                elif strategy_arg in {"pump", "cooldown", "pc"}:
+                    requested_mode = "pump_cooldown"
+
             # Generate unique scan ID
             scan_id = f"scan_{uuid.uuid4().hex[:12]}"
             user_id = str(update.effective_user.id)
@@ -406,8 +459,11 @@ The bot automatically scans the market every hour and opens short positions on c
             )
 
             # Send initial message
+            strategy_label = "Order Block Breakout" if (requested_mode == "order_block") else "Pump & Cooldown"
+
             initial_message = await update.effective_message.reply_text(
                 "🔍 *Starting market scan...*\n\n"
+                f"Strategy: *{strategy_label}*\n"
                 f"{self._format_progress_bar(0)}\n"
                 "Processed: 0/~200 symbols\n"
                 "Signals found: 0",
@@ -473,7 +529,10 @@ The bot automatically scans the market every hour and opens short positions on c
             # Execute scan in thread pool (blocking operation)
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, lambda: self.engine.execute_scan_and_trade(max_signals=30, scan_id=scan_id, triggered_by=user_id)
+                None,
+                lambda: self.engine.execute_scan_and_trade(
+                    max_signals=30, scan_id=scan_id, triggered_by=user_id, strategy_mode=requested_mode
+                ),
             )
 
             # Mark scan as complete
@@ -490,11 +549,15 @@ The bot automatically scans the market every hour and opens short positions on c
                     pass
 
             # Send final summary message
+            final_strategy_label = (
+                "Order Block Breakout" if result.get("strategy_mode") == "order_block" else "Pump & Cooldown"
+            )
             message = f"""
 ✅ *Scan completed*
 
 📊 Signals found: {result['signals_found']}
 ✅ Positions opened: {result['positions_opened']}
+🎯 Strategy: {final_strategy_label}
 """
             # Add signal symbols if signals were found
             if result.get("signals_found", 0) > 0 and result.get("signals"):

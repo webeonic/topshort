@@ -84,12 +84,14 @@ class PositionRepository:
         margin: float,
         leverage: int,
         take_profit_price: float,
+        side: str = "short",
         stop_loss_price: Optional[float] = None,
         order_id: Optional[str] = None,
         source: str = "bot_auto",
         source_metadata: Optional[Dict] = None,
     ) -> Position:
         """Create new position with source tracking."""
+        side = side.lower() if side else "short"
         position = Position(
             symbol=symbol,
             entry_price=entry_price,
@@ -97,7 +99,7 @@ class PositionRepository:
             quantity=quantity,
             margin=margin,
             leverage=leverage,
-            side="short",
+            side=side,
             take_profit_price=take_profit_price,
             stop_loss_price=stop_loss_price,
             order_id=order_id,
@@ -137,15 +139,16 @@ class PositionRepository:
         if not position:
             raise ValueError(f"Position {position_id} not found")
 
-        # Calculate P&L for short position using Decimal for precision
-        # P&L = (entry_price - exit_price) * quantity
         entry = Decimal(str(position.entry_price))
         exit_p = Decimal(str(exit_price))
         qty = Decimal(str(position.quantity))
 
-        # Calculate P&L with proper rounding
-        pnl = ((entry - exit_p) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        pnl_pct = (((entry - exit_p) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if position.side == "long":
+            pnl = ((exit_p - entry) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            pnl_pct = (((exit_p - entry) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        else:
+            pnl = ((entry - exit_p) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            pnl_pct = (((entry - exit_p) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         # Update position (convert back to float for database storage)
         position.status = "closed"

@@ -235,6 +235,7 @@ class MarketData:
         cooldown_hours_max: int,
         volume_decrease_threshold: float,
         top_n: int = 30,
+        symbols: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
     ) -> List[Dict]:
         """Scan market for symbols matching criteria using parallel processing.
@@ -247,6 +248,7 @@ class MarketData:
             cooldown_hours_max: Maximum cooldown period hours
             volume_decrease_threshold: Volume decrease threshold
             top_n: Number of top results to return
+            symbols: Optional explicit list of symbols to analyze
             progress_callback: Optional callback(processed, total, signals_found) for progress updates
 
         Returns: List of top N symbols sorted by score
@@ -254,7 +256,8 @@ class MarketData:
         start_time = time.time()
         logger.info("Starting parallel market scan...")
 
-        symbols = self.client.get_usdt_perpetual_symbols()
+        if symbols is None or not symbols:
+            symbols = self.client.get_usdt_perpetual_symbols()
         total_symbols = len(symbols)
 
         # Calculate optimal number of workers dynamically

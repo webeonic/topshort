@@ -332,6 +332,12 @@ All exchange API calls are mocked to:
 - ✅ Automatic cleanup after tests
 - ✅ No external dependencies
 
+### Backtesting (`test_backtest_engine.py`)
+
+- ✅ Проверяет расчёт результатов сделок и R-множителей для long/short сценариев.
+- ✅ Использует синтетические свечи, не требуя реального Binance API.
+- ✅ Гарантирует корректность вспомогательных методов `BacktestEngine` до запуска CLI `scripts/run_backtest.py`.
+
 ## Expected Coverage
 
 Based on the generated tests:
