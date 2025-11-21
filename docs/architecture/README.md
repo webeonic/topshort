@@ -96,6 +96,10 @@ Comprehensive test suite documentation:
 ### Strategy Layer
 - **Detector** - детекция пампов и остывания
 - **Scanner** - сканирование рынка
+- **Order Block Breakout Strategy** - мульти-таймфрейм SMC анализ, объединённый с FVG/volume фильтрами
+
+### Data Services
+- **Top Pairs Service** - ежедневный сбор топ-50 монет по капитализации через CoinGecko, маппинг на USDT-пары Binance и кэширование в `data/top_pairs_cache.json`. Сервис используется торговым движком, ботом и планировщиком, автоматически обновляется и предоставляет fallback-список при сбоях API.
 
 ## 🛠️ Паттерны проектирования
 

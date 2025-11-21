@@ -1,12 +1,79 @@
 """Configuration management for TopShort trading bot."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+
+DEFAULT_FALLBACK_PAIRS = [
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT",
+    "BNB/USDT:USDT",
+    "XRP/USDT:USDT",
+    "SOL/USDT:USDT",
+    "ADA/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "AVAX/USDT:USDT",
+    "DOT/USDT:USDT",
+    "LINK/USDT:USDT",
+]
+
+DEFAULT_SILVER_BULLET_SESSIONS = [
+    ("London", "08:00", "09:00"),
+    ("NewYorkAM", "15:00", "16:00"),
+    ("NewYorkPM", "19:00", "20:00"),
+]
+
+
+@dataclass
+class SessionWindow:
+    """Trading session window in UTC."""
+
+    name: str
+    start_utc: str
+    end_utc: str
+
+
+@dataclass
+class PairsConfig:
+    """Configuration for managing top market pairs."""
+
+    top_n: int
+    cache_path: str
+    refresh_interval_hours: int
+    coingecko_url: str
+    coingecko_vs_currency: str
+    coingecko_order: str
+    http_timeout_seconds: int
+    fallback_pairs: List[str] = field(default_factory=list)
+
+
+@dataclass
+class OrderBlockStrategyConfig:
+    """Order Block Breakout strategy configuration."""
+
+    enabled: bool
+    lookback_months: int
+    swing_length: int
+    min_fvg_size_pct: float
+    min_ob_score: float
+    volume_ma_period: int
+    volume_spike_threshold: float
+    high_volume_threshold: float
+    atr_period: int
+    atr_stop_multiplier: float
+    atr_target_multiplier: float
+    risk_per_trade_pct: float
+    max_signals: int
+    timeframes: List[str] = field(default_factory=list)
+    entry_timeframe: str = "15m"
+    confirmation_timeframe: str = "5m"
+    sessions_utc: List[SessionWindow] = field(default_factory=list)
 
 
 @dataclass
@@ -81,6 +148,8 @@ class Config:
     database: DatabaseConfig
     trading: TradingConfig
     scanner: ScannerConfig
+    pairs: PairsConfig
+    order_block_strategy: OrderBlockStrategyConfig
     scheduler: SchedulerConfig
     logging: LoggingConfig
 
@@ -115,6 +184,40 @@ def load_config() -> Config:
             monitor_interval_seconds=int(os.getenv("MONITOR_INTERVAL_SECONDS", "30")),
         ),
         logging=LoggingConfig(level=os.getenv("LOG_LEVEL", "INFO"), file=os.getenv("LOG_FILE", "./logs/topshort.log")),
+        pairs=PairsConfig(
+            top_n=int(os.getenv("TOP_PAIRS_COUNT", "50")),
+            cache_path=os.getenv("TOP_PAIRS_CACHE_PATH", "./data/top_pairs_cache.json"),
+            refresh_interval_hours=int(os.getenv("TOP_PAIRS_REFRESH_HOURS", "24")),
+            coingecko_url=os.getenv("COINGECKO_MARKETS_URL", "https://api.coingecko.com/api/v3/coins/markets"),
+            coingecko_vs_currency=os.getenv("COINGECKO_VS_CURRENCY", "usd"),
+            coingecko_order=os.getenv("COINGECKO_MARKETS_ORDER", "market_cap_desc"),
+            http_timeout_seconds=int(os.getenv("COINGECKO_HTTP_TIMEOUT", "15")),
+            fallback_pairs=_parse_pairs(os.getenv("TOP_PAIRS_FALLBACK", "")),
+        ),
+        order_block_strategy=OrderBlockStrategyConfig(
+            enabled=os.getenv("OB_STRATEGY_ENABLED", "true").lower() == "true",
+            lookback_months=int(os.getenv("OB_LOOKBACK_MONTHS", "6")),
+            swing_length=int(os.getenv("OB_SWING_LENGTH", "10")),
+            min_fvg_size_pct=float(os.getenv("OB_MIN_FVG_SIZE_PCT", "0.3")),
+            min_ob_score=float(os.getenv("OB_MIN_OB_SCORE", "0.5")),
+            volume_ma_period=int(os.getenv("OB_VOLUME_MA_PERIOD", "20")),
+            volume_spike_threshold=float(os.getenv("OB_VOLUME_SPIKE_THRESHOLD", "1.2")),
+            high_volume_threshold=float(os.getenv("OB_HIGH_VOLUME_THRESHOLD", "1.5")),
+            atr_period=int(os.getenv("OB_ATR_PERIOD", "14")),
+            atr_stop_multiplier=float(os.getenv("OB_ATR_STOP_MULTIPLIER", "1.5")),
+            atr_target_multiplier=float(os.getenv("OB_ATR_TARGET_MULTIPLIER", "2.0")),
+            risk_per_trade_pct=float(os.getenv("OB_RISK_PER_TRADE_PCT", "1.0")),
+            max_signals=int(os.getenv("OB_MAX_SIGNALS", "10")),
+            timeframes=_parse_timeframes(os.getenv("OB_TIMEFRAMES", "1d,4h,1h,15m,5m")),
+            entry_timeframe=os.getenv("OB_ENTRY_TIMEFRAME", "15m"),
+            confirmation_timeframe=os.getenv("OB_CONFIRMATION_TIMEFRAME", "5m"),
+            sessions_utc=_parse_sessions(
+                os.getenv(
+                    "OB_SESSION_WINDOWS",
+                    "London:08:00-09:00,NewYorkAM:15:00-16:00,NewYorkPM:19:00-20:00",
+                )
+            ),
+        ),
     )
 
 
@@ -139,6 +242,45 @@ def validate_config(config: Config) -> list[str]:
         errors.append("DEFAULT_LEVERAGE must be >= 1")
 
     return errors
+
+
+def _parse_pairs(value: str) -> List[str]:
+    """Parse comma-separated list of trading pairs."""
+    if not value:
+        return DEFAULT_FALLBACK_PAIRS.copy()
+    pairs = [pair.strip().upper() for pair in value.split(",") if pair.strip()]
+    return pairs or DEFAULT_FALLBACK_PAIRS.copy()
+
+
+def _parse_timeframes(value: str) -> List[str]:
+    """Parse comma-separated timeframes."""
+    if not value:
+        return ["1d", "4h", "1h", "15m", "5m"]
+    return [tf.strip() for tf in value.split(",") if tf.strip()]
+
+
+def _parse_sessions(value: str) -> List[SessionWindow]:
+    """Parse session windows defined as Name:HH:MM-HH:MM."""
+    sessions: List[SessionWindow] = []
+    if not value:
+        value = ",".join([f"{name}:{start}-{end}" for name, start, end in DEFAULT_SILVER_BULLET_SESSIONS])
+
+    segments = [segment.strip() for segment in value.split(",") if segment.strip()]
+    for segment in segments:
+        try:
+            name_part, hours_part = segment.split(":")
+            start_part, end_part = hours_part.split("-")
+            sessions.append(SessionWindow(name=name_part, start_utc=start_part, end_utc=end_part))
+        except ValueError:
+            # Skip malformed entries
+            continue
+
+    if not sessions:
+        sessions = [
+            SessionWindow(name=name, start_utc=start, end_utc=end) for name, start, end in DEFAULT_SILVER_BULLET_SESSIONS
+        ]
+
+    return sessions
 
 
 # Global config instance

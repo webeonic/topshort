@@ -325,6 +325,33 @@ class BinanceClient:
             logger.error(f"Error opening short position for {symbol}: {e}")
             return None
 
+    def open_long_position(self, symbol: str, margin_usdt: float, leverage: int) -> Optional[Dict]:
+        """Open a long position using market order."""
+        try:
+            if not self.set_leverage(symbol, leverage):
+                return None
+
+            ticker = self.get_ticker(symbol)
+            if not ticker:
+                return None
+
+            current_price = ticker["last"]
+            notional_value = margin_usdt * leverage
+            quantity = notional_value / current_price
+            quantity = self.exchange.amount_to_precision(symbol, quantity)
+
+            logger.info(
+                f"Opening long position: {symbol}, "
+                f"Margin: {margin_usdt} USDT, Leverage: {leverage}x, "
+                f"Price: {current_price}, Quantity: {quantity}"
+            )
+
+            order = self.create_market_order(symbol, "buy", float(quantity), position_side="LONG")
+            return order
+        except Exception as e:
+            logger.error(f"Error opening long position for {symbol}: {e}")
+            return None
+
     def close_short_position(self, symbol: str, quantity: float) -> Optional[Dict]:
         """Close a short position.
 
@@ -342,6 +369,17 @@ class BinanceClient:
             return order
         except Exception as e:
             logger.error(f"Error closing short position for {symbol}: {e}")
+            return None
+
+    def close_long_position(self, symbol: str, quantity: float) -> Optional[Dict]:
+        """Close a long position."""
+        try:
+            order = self.create_market_order(symbol, "sell", quantity, position_side="LONG")
+            if order and "error_code" not in order:
+                logger.info(f"Closed long position: {symbol}, Quantity: {quantity}")
+            return order
+        except Exception as e:
+            logger.error(f"Error closing long position for {symbol}: {e}")
             return None
 
     def get_positions(self) -> List[Dict]:

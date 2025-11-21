@@ -28,37 +28,56 @@ class PositionManager:
         """Get take profit percentage from settings."""
         return self.settings_repo.get_float("take_profit_pct", self.config.take_profit_pct)
 
-    def calculate_take_profit_price(self, entry_price: float) -> float:
-        """Calculate take profit price for short position.
-
-        For short: TP price = entry price * (1 - TP_pct/100)
-        Example: Entry at 100, TP 5% -> TP price = 100 * 0.95 = 95
-        """
+    def calculate_take_profit_price(self, entry_price: float, direction: str) -> float:
+        """Calculate take profit price for a given direction."""
         tp_pct = self.get_take_profit_pct()
+        direction = direction.lower()
 
         # Use Decimal for precise calculation
         entry = Decimal(str(entry_price))
         tp_percent = Decimal(str(tp_pct))
-        tp_price = (entry * (1 - tp_percent / 100)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+
+        if direction == "long":
+            tp_price = (entry * (1 + tp_percent / 100)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
+        else:
+            tp_price = (entry * (1 - tp_percent / 100)).quantize(Decimal("0.00000001"), rounding=ROUND_HALF_UP)
 
         return float(tp_price)
 
-    def open_position(self, symbol: str, margin: float, leverage: int) -> Optional[Dict]:
-        """Open a new short position.
+    def open_position(
+        self,
+        symbol: str,
+        margin: float,
+        leverage: int,
+        *,
+        direction: str = "short",
+        take_profit_price: Optional[float] = None,
+        stop_loss_price: Optional[float] = None,
+        metadata: Optional[Dict] = None,
+    ) -> Optional[Dict]:
+        """Open a new position.
 
         Args:
             symbol: Trading symbol
             margin: Margin in USDT
             leverage: Leverage to use
+            direction: 'long' or 'short'
+            take_profit_price: Optional custom take profit level
+            stop_loss_price: Optional stop loss reference
+            metadata: Additional metadata stored in DB
 
         Returns: Dict with position info or None if failed
         """
         order = None
         try:
-            logger.info(f"Opening position: {symbol}, Margin={margin}, Leverage={leverage}x")
+            direction = direction.lower()
+            logger.info(f"Opening {direction} position: {symbol}, Margin={margin}, Leverage={leverage}x")
 
-            # Open short position on exchange
-            order = self.client.open_short_position(symbol, margin, leverage)
+            # Open position on exchange
+            if direction == "long":
+                order = self.client.open_long_position(symbol, margin, leverage)
+            else:
+                order = self.client.open_short_position(symbol, margin, leverage)
 
             if not order:
                 logger.error(f"Failed to open position for {symbol}")
@@ -88,7 +107,11 @@ class PositionManager:
             quantity = float(order.get("filled", 0) or order.get("amount", 0))
 
             # Calculate take profit price
-            tp_price = self.calculate_take_profit_price(entry_price)
+            tp_price = (
+                float(take_profit_price)
+                if take_profit_price is not None
+                else self.calculate_take_profit_price(entry_price, direction)
+            )
 
             # Begin nested transaction for database operations
             self.session.begin_nested()
@@ -102,17 +125,20 @@ class PositionManager:
                     margin=margin,
                     leverage=leverage,
                     take_profit_price=tp_price,
+                    side=direction,
+                    stop_loss_price=stop_loss_price,
                     order_id=order.get("id"),
                     source="bot_auto",
+                    source_metadata=metadata,
                 )
 
                 # Place take-profit limit order immediately
                 tp_order = self.client.create_limit_order(
                     symbol=symbol,
-                    side="buy",  # Buy to close short position
+                    side="sell" if direction == "long" else "buy",
                     quantity=quantity,
                     price=tp_price,
-                    position_side="SHORT",
+                    position_side="LONG" if direction == "long" else "SHORT",
                 )
 
                 if tp_order:
@@ -137,7 +163,8 @@ class PositionManager:
                     f"Entry={entry_price:.4f}, "
                     f"Quantity={quantity:.8f}, "
                     f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%), "
-                    f"TP Order={tp_order.get('id') if tp_order else 'FAILED'}"
+                    f"TP Order={tp_order.get('id') if tp_order else 'FAILED'}, "
+                    f"Side={direction.upper()}"
                 )
 
                 return {
@@ -148,6 +175,8 @@ class PositionManager:
                     "margin": margin,
                     "leverage": leverage,
                     "take_profit_price": tp_price,
+                    "stop_loss_price": stop_loss_price,
+                    "direction": direction,
                     "order_id": order.get("id"),
                     "take_profit_order_id": tp_order.get("id") if tp_order else None,
                 }
@@ -159,7 +188,10 @@ class PositionManager:
 
                 # Try to close orphaned exchange position
                 try:
-                    self.client.close_short_position(symbol, quantity)
+                    if direction == "long":
+                        self.client.close_long_position(symbol, quantity)
+                    else:
+                        self.client.close_short_position(symbol, quantity)
                     logger.info(f"Closed orphaned position after DB error for {symbol}")
                 except:
                     logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
@@ -174,7 +206,10 @@ class PositionManager:
                 try:
                     quantity = float(order.get("filled", 0) or order.get("amount", 0))
                     if quantity > 0:
-                        self.client.close_short_position(symbol, quantity)
+                        if direction == "long":
+                            self.client.close_long_position(symbol, quantity)
+                        else:
+                            self.client.close_short_position(symbol, quantity)
                         logger.info(f"Closed orphaned position after error for {symbol}")
                 except:
                     logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
@@ -240,7 +275,10 @@ class PositionManager:
                 }
 
             # Close position on exchange
-            order = self.client.close_short_position(position.symbol, position.quantity)
+            if position.side == "long":
+                order = self.client.close_long_position(position.symbol, position.quantity)
+            else:
+                order = self.client.close_short_position(position.symbol, position.quantity)
 
             if not order:
                 logger.error(f"Failed to close position {position_id}")
@@ -343,15 +381,33 @@ class PositionManager:
                 # Update current price in database
                 self.position_repo.update_current_price(position.id, current_price)
 
-                # Check if take profit is reached
-                # For short position: close when price <= TP price
-                if current_price <= position.take_profit_price:
+                tp_reached = False
+                sl_reached = False
+                if position.side == "short":
+                    tp_reached = current_price <= position.take_profit_price
+                    if position.stop_loss_price:
+                        sl_reached = current_price >= position.stop_loss_price
+                else:
+                    tp_reached = current_price >= position.take_profit_price
+                    if position.stop_loss_price:
+                        sl_reached = current_price <= position.stop_loss_price
+
+                if tp_reached:
                     logger.info(
                         f"Take profit reached for {position.symbol}: "
                         f"Current={current_price:.4f}, TP={position.take_profit_price:.4f}"
                     )
-
                     close_info = self.close_position(position.id, "take_profit")
+                    if close_info:
+                        closed.append(close_info)
+                        continue
+
+                if sl_reached:
+                    logger.info(
+                        f"Stop loss triggered for {position.symbol}: "
+                        f"Current={current_price:.4f}, SL={position.stop_loss_price:.4f}"
+                    )
+                    close_info = self.close_position(position.id, "stop_loss")
                     if close_info:
                         closed.append(close_info)
 
@@ -396,8 +452,16 @@ class PositionManager:
             current = Decimal(str(position.current_price))
             qty = Decimal(str(position.quantity))
 
-            unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-            unrealized_pnl_pct = float((((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if position.side == "long":
+                unrealized_pnl = float(((current - entry) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                unrealized_pnl_pct = float(
+                    (((current - entry) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                )
+            else:
+                unrealized_pnl = float(((entry - current) * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                unrealized_pnl_pct = float(
+                    (((entry - current) / entry) * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                )
         else:
             unrealized_pnl = 0.0
             unrealized_pnl_pct = 0.0
@@ -411,6 +475,8 @@ class PositionManager:
             "margin": position.margin,
             "leverage": position.leverage,
             "take_profit_price": position.take_profit_price,
+            "stop_loss_price": position.stop_loss_price,
+            "side": position.side,
             "unrealized_pnl": round(unrealized_pnl, 2),
             "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
             "opened_at": position.opened_at.isoformat() if position.opened_at else None,

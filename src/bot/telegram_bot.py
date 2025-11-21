@@ -52,6 +52,8 @@ class TelegramBot:
         app.add_handler(CommandHandler("pause", self.commands.pause))
         app.add_handler(CommandHandler("resume", self.commands.resume))
         app.add_handler(CommandHandler("scan", self.commands.scan))
+        app.add_handler(CommandHandler("pairs", self.commands.top_pairs))
+        app.add_handler(CommandHandler("top_pairs", self.commands.top_pairs))
         app.add_handler(CommandHandler("close", self.commands.close))
         app.add_handler(CommandHandler("closeall", self.commands.closeall))
         app.add_handler(CommandHandler("help", self.commands.start))

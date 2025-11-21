@@ -99,6 +99,25 @@ class SchedulerJobs:
         except Exception as e:
             logger.error(f"Error in cleanup_data_job: {e}", exc_info=True)
 
+    async def refresh_top_pairs_job(self):
+        """Refresh cached list of top trading pairs."""
+        try:
+            if not getattr(self.engine, "top_pairs_service", None):
+                logger.warning("Top pairs service is not initialized, skipping refresh")
+                return
+
+            logger.info("Refreshing top pairs cache via scheduled job...")
+            await asyncio.to_thread(self.engine.top_pairs_service.refresh)
+            meta = self.engine.top_pairs_service.get_metadata()
+            logger.info(
+                "Top pairs cache refreshed: %s pairs (source=%s, updated=%s)",
+                meta.get("count"),
+                meta.get("source"),
+                meta.get("last_updated"),
+            )
+        except Exception as e:
+            logger.error(f"Error refreshing top pairs cache: {e}", exc_info=True)
+
     def start(self):
         """Start scheduler with configured jobs."""
         logger.info("Starting scheduler")
@@ -136,6 +155,16 @@ class SchedulerJobs:
             replace_existing=True,
         )
         logger.info("Scheduled cleanup_data job: daily at 2:00 AM")
+
+        # Job 4: Refresh top pairs list (daily at 1 AM UTC)
+        self.scheduler.add_job(
+            self.refresh_top_pairs_job,
+            trigger=CronTrigger(hour=1, minute=0),
+            id="refresh_top_pairs",
+            name="Refresh Top Pairs",
+            replace_existing=True,
+        )
+        logger.info("Scheduled refresh_top_pairs job: daily at 1:00 AM")
 
         # Start scheduler
         self.scheduler.start()

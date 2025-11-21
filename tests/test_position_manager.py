@@ -36,7 +36,9 @@ def mock_client():
     """Create mock Binance client."""
     client = Mock()
     client.open_short_position = Mock()
+    client.open_long_position = Mock()
     client.close_short_position = Mock()
+    client.close_long_position = Mock()
     client.create_limit_order = Mock()
     client.get_ticker = Mock()
     client.fetch_tickers = Mock()
@@ -79,18 +81,24 @@ class TestTakeProfitCalculation:
         tp_pct = position_manager.get_take_profit_pct()
         assert tp_pct == 5.0
 
-    def test_calculate_take_profit_price(self, position_manager):
+    def test_calculate_take_profit_price_short(self, position_manager):
         """Test calculating TP price for short position."""
         entry_price = 50000.0
-        tp_price = position_manager.calculate_take_profit_price(entry_price)
+        tp_price = position_manager.calculate_take_profit_price(entry_price, "short")
 
         # For short: TP = entry * (1 - 0.05) = 50000 * 0.95 = 47500
         assert tp_price == 47500.0
 
+    def test_calculate_take_profit_price_long(self, position_manager):
+        """Test calculating TP price for long position."""
+        entry_price = 2000.0
+        tp_price = position_manager.calculate_take_profit_price(entry_price, "long")
+        assert tp_price == 2100.0  # 5% gain
+
     def test_calculate_take_profit_precision(self, position_manager):
         """Test TP calculation precision."""
         entry_price = 33333.33
-        tp_price = position_manager.calculate_take_profit_price(entry_price)
+        tp_price = position_manager.calculate_take_profit_price(entry_price, "short")
 
         # Should use Decimal for precision
         expected = 33333.33 * 0.95
@@ -105,7 +113,7 @@ class TestTakeProfitCalculation:
         ]
 
         for entry, expected_tp in test_cases:
-            tp_price = position_manager.calculate_take_profit_price(entry)
+            tp_price = position_manager.calculate_take_profit_price(entry, "short")
             assert abs(tp_price - expected_tp) < 0.0001
 
 
@@ -198,6 +206,30 @@ class TestOpenPosition:
         assert call_args[1]["quantity"] == 0.1
         assert call_args[1]["price"] == 47500.0  # TP price
         assert call_args[1]["position_side"] == "SHORT"
+
+    def test_open_long_position(self, position_manager, mock_client, db_session):
+        """Test opening a long position."""
+        mock_client.open_long_position.return_value = {"id": "ORDER999", "average": 2000.0, "filled": 1.0}
+        mock_client.create_limit_order.return_value = {"id": "TP_LONG"}
+
+        result = position_manager.open_position(
+            "ETHUSDT", 50.0, 5, direction="long", take_profit_price=2100.0, stop_loss_price=1950.0
+        )
+
+        assert result is not None
+        assert result["direction"] == "long"
+        assert result["take_profit_price"] == 2100.0
+        assert result["stop_loss_price"] == 1950.0
+
+        mock_client.open_long_position.assert_called_once_with("ETHUSDT", 50.0, 5)
+        mock_client.create_limit_order.assert_called_with(
+            symbol="ETHUSDT", side="sell", quantity=1.0, price=2100.0, position_side="LONG"
+        )
+
+        position = db_session.query(Position).filter_by(symbol="ETHUSDT").first()
+        assert position is not None
+        assert position.side == "long"
+        assert position.stop_loss_price == 1950.0
 
 
 class TestClosePosition:
