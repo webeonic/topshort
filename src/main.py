@@ -160,8 +160,13 @@ class TopShortBot:
         if self.scheduler:
             self.scheduler.stop()
 
-        # Stop Telegram bot
+        # Notify users before stopping the bot so the message is delivered
         if self.telegram_bot:
+            try:
+                await self.telegram_bot.send_message("🛑 *TopShort Bot stopped*")
+            except Exception:
+                self.logger.warning("Failed to send shutdown notification", exc_info=True)
+
             await self.telegram_bot.stop()
 
         shutdown_async_executor()
@@ -172,12 +177,6 @@ class TopShortBot:
                 self.session.remove()
             except AttributeError:
                 self.session.close()
-
-        # Send shutdown notification
-        try:
-            await self.telegram_bot.send_message("🛑 *TopShort Bot stopped*")
-        except:
-            pass
 
         self.logger.info("TopShort Trading Bot stopped")
 
