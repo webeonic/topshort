@@ -14,6 +14,7 @@ from .database.models import create_database, get_session, init_default_settings
 from .exchange.binance_client import BinanceClient
 from .scheduler.jobs import SchedulerJobs
 from .trading.engine import TradingEngine
+from .utils.async_executor import configure_async_executor, shutdown_async_executor
 
 
 def setup_logging(config):
@@ -78,6 +79,7 @@ class TopShortBot:
         # Load configuration
         self.logger.info("Loading configuration...")
         self.config = get_config()
+        configure_async_executor(self.config.concurrency.blocking_workers)
 
         # Setup logging
         setup_logging(self.config)
@@ -111,7 +113,12 @@ class TopShortBot:
 
         # Initialize Telegram bot
         self.logger.info("Initializing Telegram bot...")
-        self.telegram_bot = TelegramBot(self.config.telegram, self.session, self.engine)
+        self.telegram_bot = TelegramBot(
+            self.config.telegram,
+            self.session,
+            self.engine,
+            self.config.concurrency,
+        )
         self.telegram_bot.setup()
 
         # Initialize scheduler
@@ -128,6 +135,7 @@ class TopShortBot:
 
         # Initialize telegram bot application
         await self.telegram_bot.initialize()
+        self.engine.attach_async_loop(asyncio.get_running_loop())
 
         # Send startup notification
         await self.telegram_bot.send_message(
@@ -156,9 +164,14 @@ class TopShortBot:
         if self.telegram_bot:
             await self.telegram_bot.stop()
 
+        shutdown_async_executor()
+
         # Close database session
         if self.session:
-            self.session.close()
+            try:
+                self.session.remove()
+            except AttributeError:
+                self.session.close()
 
         # Send shutdown notification
         try:

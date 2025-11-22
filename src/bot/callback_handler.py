@@ -1,9 +1,11 @@
 """Callback query handler for inline keyboard interactions."""
 
+from __future__ import annotations
+
 import logging
 import time
 from functools import wraps
-from typing import Callable, Dict
+from typing import TYPE_CHECKING, Callable, Dict
 
 from sqlalchemy.orm import Session
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -11,6 +13,12 @@ from telegram.ext import ContextTypes
 
 from ..database.repository import CallbackLogRepository, KeyboardStateRepository
 from ..trading.engine import TradingEngine
+from ..utils.async_executor import run_blocking
+from . import commands as bot_commands_module
+from .scan_queue import ScanQueueManager
+
+if TYPE_CHECKING:
+    from .commands import BotCommands
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +77,22 @@ def log_callback(success: bool = True):
 class CallbackHandler:
     """Handle callback queries from inline keyboards."""
 
-    def __init__(self, session: Session, engine: TradingEngine):
+    def __init__(self, session: Session, engine: TradingEngine, commands: "BotCommands" | None = None):
         self.session = session
         self.engine = engine
+        self._scan_queue = commands.scan_queue if commands else None
+        self._commands_instance = commands
         self.callback_log_repo = CallbackLogRepository(session)
         self.state_repo = KeyboardStateRepository(session)
         self.handlers: Dict[str, Callable] = {}
         self._register_default_handlers()
+
+    def _get_commands(self) -> "BotCommands":
+        if self._commands_instance:
+            return self._commands_instance
+        commands = bot_commands_module.BotCommands(self.session, self.engine)
+        commands.scan_queue = self._scan_queue
+        return commands
 
     def _register_default_handlers(self):
         """Register default callback handlers."""
@@ -153,76 +170,37 @@ class CallbackHandler:
     @log_callback(success=True)
     async def handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle status callback."""
-        from .commands import BotCommands
-
-        query = update.callback_query
-
-        # Use the effective_message directly instead of creating mock update
-        commands = BotCommands(self.session, self.engine)
-        await commands.status(update, context)
+        await self._get_commands().status(update, context)
 
     @log_callback(success=True)
     async def handle_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle positions callback."""
-        from .commands import BotCommands
-
-        query = update.callback_query
-
-        # Use the effective_message directly instead of creating mock update
-        commands = BotCommands(self.session, self.engine)
-        await commands.positions(update, context)
+        await self._get_commands().positions(update, context)
 
     @log_callback(success=True)
     async def handle_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle history callback."""
-        from .commands import BotCommands
-
-        query = update.callback_query
-
-        # Use the effective_message directly instead of creating mock update
-        commands = BotCommands(self.session, self.engine)
-        await commands.history(update, context)
+        await self._get_commands().history(update, context)
 
     @log_callback(success=True)
     async def handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle stats callback."""
-        from .commands import BotCommands
-
-        query = update.callback_query
-
-        # Use the effective_message directly instead of creating mock update
-        commands = BotCommands(self.session, self.engine)
-        await commands.stats(update, context)
+        await self._get_commands().stats(update, context)
 
     @log_callback(success=True)
     async def handle_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle settings callback."""
-        from .commands import BotCommands
-
-        query = update.callback_query
-
-        # Use the effective_message directly instead of creating mock update
-        commands = BotCommands(self.session, self.engine)
-        await commands.settings(update, context)
+        await self._get_commands().settings(update, context)
 
     @log_callback(success=True)
     async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle help callback."""
-        from .commands import BotCommands
-
-        query = update.callback_query
-
-        # Use the effective_message directly instead of creating mock update
-        commands = BotCommands(self.session, self.engine)
-        await commands.start(update, context)
+        await self._get_commands().start(update, context)
 
     @log_callback(success=True)
     async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle return to main menu."""
-        from .commands import BotCommands
-
-        commands = BotCommands(self.session, self.engine)
-        await commands.show_menu(update, context)
+        await self._get_commands().show_menu(update, context)
 
     @log_callback(success=True)
     async def handle_scan_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -248,8 +226,6 @@ class CallbackHandler:
     @log_callback(success=True)
     async def handle_scan_strategy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Execute manual scan for selected strategy."""
-        from .commands import BotCommands
-
         query = update.callback_query
         strategy_mode = query.data.replace("scan_strategy_", "", 1)
         alias_map = {"pump_cooldown": "pc", "order_block": "ob"}
@@ -267,9 +243,8 @@ class CallbackHandler:
             parse_mode="Markdown",
         )
 
-        commands = BotCommands(self.session, self.engine)
         context.args = [alias_map[strategy_mode]]
-        await commands.scan(update, context)
+        await self._get_commands().scan(update, context)
 
     @log_callback(success=True)
     async def handle_position_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -278,7 +253,7 @@ class CallbackHandler:
         # Extract symbol from callback_data: pos_details_BTCUSDT
         symbol = query.data.replace("pos_details_", "")
 
-        position = self.engine.position_manager.get_position_by_symbol(symbol)
+        position = await run_blocking(self.engine.position_manager.get_position_by_symbol, symbol)
         if not position:
             await query.edit_message_text(f"❌ Position not found: {symbol}")
             return
@@ -304,7 +279,7 @@ class CallbackHandler:
 
         await query.answer("🔄 Refreshing position data...")
         # Trigger position update
-        self.engine.position_manager.update_positions()
+        await run_blocking(self.engine.position_manager.update_positions)
 
         # Show updated details
         await self.handle_position_details(update, context)
@@ -317,7 +292,7 @@ class CallbackHandler:
 
         await query.answer("Closing position...")
 
-        result = self.engine.position_manager.close_position_by_symbol(symbol, "manual")
+        result = await run_blocking(self.engine.position_manager.close_position_by_symbol, symbol, "manual")
 
         if result:
             pnl_emoji = "🟢" if result["pnl"] > 0 else "🔴"
@@ -340,7 +315,7 @@ class CallbackHandler:
         from ..database.repository import BotStatusRepository
 
         bot_status_repo = BotStatusRepository(self.session)
-        bot_status_repo.set_paused(False)
+        await run_blocking(bot_status_repo.set_paused, False)
 
         await query.edit_message_text("▶️ *Trading resumed*", parse_mode="Markdown")
 
@@ -351,7 +326,7 @@ class CallbackHandler:
         from ..database.repository import BotStatusRepository
 
         bot_status_repo = BotStatusRepository(self.session)
-        bot_status_repo.set_paused(True)
+        await run_blocking(bot_status_repo.set_paused, True)
 
         await query.edit_message_text("⏸️ *Trading paused*", parse_mode="Markdown")
 
@@ -361,28 +336,7 @@ class CallbackHandler:
         query = update.callback_query
         await query.answer("🔍 Starting market scan...")
 
-        allowed_modes = {"pump_cooldown", "order_block"}
-        default_mode = getattr(self.engine.config.strategy_runtime, "default_manual_strategy", "pump_cooldown")
-        strategy_mode = default_mode if default_mode in allowed_modes else "pump_cooldown"
-
-        if strategy_mode == "order_block":
-            result = self.engine.execute_order_block_cycle(triggered_by=str(query.from_user.id))
-        else:
-            result = self.engine.execute_pump_scan_and_trade(triggered_by=str(query.from_user.id))
-
-        message = f"""
-✅ *Scan Completed*
-
-📊 Signals found: {result['signals_found']}
-✅ Positions opened: {result['positions_opened']}
-"""
-        # Add signal symbols if signals were found
-        if result.get("signals_found", 0) > 0 and result.get("signals"):
-            message += "\n📈 Signal pairs:\n"
-            for signal in result["signals"]:
-                message += f"  • {signal['symbol']}\n"
-
-        await query.edit_message_text(message, parse_mode="Markdown")
+        await self._get_commands().scan(update, context)
 
     @log_callback(success=True)
     async def handle_trading_closeall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -390,7 +344,7 @@ class CallbackHandler:
         query = update.callback_query
         await query.answer("🔄 Closing all positions...")
 
-        result = self.engine.close_all_positions("manual")
+        result = await run_blocking(self.engine.close_all_positions, "manual")
 
         message = f"""
 ✅ *Close All Completed*

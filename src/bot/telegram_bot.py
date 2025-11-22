@@ -7,11 +7,12 @@ from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
-from ..config import TelegramConfig
+from ..config import ConcurrencyConfig, TelegramConfig
 from .callback_handler import CallbackHandler
 from .commands import BotCommands
 from .keyboard_builder import KeyboardBuilder
 from .keyboard_init import init_keyboard_templates
+from .scan_queue import ScanQueueManager
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +20,24 @@ logger = logging.getLogger(__name__)
 class TelegramBot:
     """Telegram bot manager."""
 
-    def __init__(self, config: TelegramConfig, session, engine):
+    def __init__(
+        self,
+        config: TelegramConfig,
+        session,
+        engine,
+        concurrency_config: ConcurrencyConfig | None = None,
+    ):
         self.config = config
         self.session = session
         self.engine = engine
-        self.commands = BotCommands(session, engine)
-        self.callback_handler = CallbackHandler(session, engine)
+        self.concurrency_config = concurrency_config
+
+        queue_size = concurrency_config.scan_queue_per_strategy if concurrency_config else 3
+        worker_delay = concurrency_config.scan_worker_delay_seconds if concurrency_config else 0.25
+
+        self.scan_queue = ScanQueueManager(max_queue_size=queue_size, worker_delay_seconds=worker_delay)
+        self.commands = BotCommands(session, engine, self.scan_queue, concurrency_config)
+        self.callback_handler = CallbackHandler(session, engine, self.commands)
         self.keyboard_builder = KeyboardBuilder(session)
         self.application: Optional[Application] = None
         self.chat_id = config.chat_id

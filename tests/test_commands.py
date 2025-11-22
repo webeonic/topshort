@@ -442,7 +442,7 @@ class TestScanCommand:
         # Verify initial message was sent
         mock_update.effective_message.reply_text.assert_called_once()
         initial_message = mock_update.effective_message.reply_text.call_args[0][0]
-        assert "Starting market scan" in initial_message
+        assert "Запрос принят" in initial_message
 
         # Verify final message was edited
         assert mock_message.edit_text.called
