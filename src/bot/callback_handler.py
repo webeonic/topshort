@@ -18,6 +18,7 @@ from . import commands as bot_commands_module
 from .scan_queue import ScanQueueManager
 
 if TYPE_CHECKING:
+    from ..config import ConcurrencyConfig
     from .commands import BotCommands
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,9 @@ class CallbackHandler:
         self.session = session
         self.engine = engine
         self._scan_queue = commands.scan_queue if commands else None
+        self._concurrency_config: "ConcurrencyConfig | None" = commands.concurrency_config if commands else None
+        if not self._concurrency_config:
+            self._concurrency_config = getattr(getattr(engine, "config", None), "concurrency", None)
         self._commands_instance = commands
         self.callback_log_repo = CallbackLogRepository(session)
         self.state_repo = KeyboardStateRepository(session)
@@ -90,8 +94,12 @@ class CallbackHandler:
     def _get_commands(self) -> "BotCommands":
         if self._commands_instance:
             return self._commands_instance
-        commands = bot_commands_module.BotCommands(self.session, self.engine)
-        commands.scan_queue = self._scan_queue
+        commands = bot_commands_module.BotCommands(
+            self.session,
+            self.engine,
+            self._scan_queue,
+            self._concurrency_config,
+        )
         return commands
 
     def _register_default_handlers(self):

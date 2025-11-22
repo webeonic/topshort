@@ -51,6 +51,7 @@ def mock_engine():
     engine.config.strategy_runtime.default_manual_strategy = "pump_cooldown"
     engine.config.strategy_runtime.order_block_top_pairs = 50
     engine.config.order_block_strategy.enabled = True
+    engine.config.concurrency = MagicMock()
     return engine
 
 
@@ -109,6 +110,25 @@ class TestCallbackHandlerInitialization:
         assert handler.callback_log_repo is not None
         assert handler.state_repo is not None
         assert isinstance(handler.handlers, dict)
+
+    def test_get_commands_uses_engine_concurrency(self, mock_session, mock_engine):
+        """Fallback BotCommands should receive scan queue and concurrency config."""
+        handler = CallbackHandler(mock_session, mock_engine)
+        handler._scan_queue = MagicMock()
+
+        with patch("src.bot.callback_handler.bot_commands_module.BotCommands") as mock_commands_class:
+            commands_instance = MagicMock()
+            mock_commands_class.return_value = commands_instance
+
+            result = handler._get_commands()
+
+        mock_commands_class.assert_called_once_with(
+            mock_session,
+            mock_engine,
+            handler._scan_queue,
+            mock_engine.config.concurrency,
+        )
+        assert result is commands_instance
 
     def test_init_registers_default_handlers(self, callback_handler):
         """Test that default handlers are registered."""
@@ -199,7 +219,12 @@ class TestCommandCallbacks:
 
             await callback_handler.handle_status(mock_update, mock_context)
 
-            mock_commands_class.assert_called_once_with(callback_handler.session, callback_handler.engine)
+            mock_commands_class.assert_called_once_with(
+                callback_handler.session,
+                callback_handler.engine,
+                None,
+                callback_handler.engine.config.concurrency,
+            )
             mock_commands.status.assert_called_once_with(mock_update, mock_context)
 
     @pytest.mark.asyncio
