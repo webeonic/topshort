@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -12,6 +13,12 @@ import pandas as pd
 from ..strategy.order_block_breakout import OrderBlockBreakoutStrategy, OrderBlockSignal
 
 logger = logging.getLogger(__name__)
+
+
+class TradeResult(str, Enum):
+    WIN = "win"
+    LOSS = "loss"
+    TIMEOUT = "timeout"
 
 
 @dataclass
@@ -24,7 +31,7 @@ class BacktestTrade:
     exit_price: float
     stop_loss: float
     target_price: float
-    result: str  # win | loss | timeout
+    result: TradeResult
     r_multiple: float
 
 
@@ -87,12 +94,25 @@ class BacktestEngine:
 
     def _simulate_trade(self, signal: OrderBlockSignal, entry_df: pd.DataFrame, signal_index: int) -> Optional[BacktestTrade]:
         direction = signal.get("direction", "short")
+        symbol = signal.get("symbol", "UNKNOWN")
         entry_idx = min(signal_index + 1, len(entry_df) - 1)
+        entry_timestamp = entry_df["timestamp"].iloc[entry_idx].to_pydatetime()
         entry_price = float(entry_df["open"].iloc[entry_idx])
         stop_loss = float(signal.get("stop_loss") or self._default_stop(entry_price, direction))
         targets = signal.get("targets") or []
         target_price = float(targets[0]) if targets else self._default_target(entry_price, direction)
-        risk = abs(entry_price - stop_loss) or 1e-6
+        risk = abs(entry_price - stop_loss)
+
+        if risk < 1e-8:  # Effectively zero
+            logger.warning(
+                "Skipping %s signal for %s at %s due to zero risk (entry %.4f, stop_loss %.4f)",
+                direction,
+                symbol,
+                entry_timestamp.isoformat(),
+                entry_price,
+                stop_loss,
+            )
+            return None
 
         horizon = min(entry_idx + self.trade_horizon, len(entry_df) - 1)
         for future_idx in range(entry_idx, horizon + 1):
@@ -104,59 +124,59 @@ class BacktestEngine:
             if direction == "long":
                 if low <= stop_loss:
                     return BacktestTrade(
-                        signal["symbol"],
+                        symbol,
                         direction,
-                        entry_df["timestamp"].iloc[entry_idx].to_pydatetime(),
+                        entry_timestamp,
                         timestamp,
                         entry_price,
                         stop_loss,
                         stop_loss,
                         target_price,
-                        "loss",
+                        TradeResult.LOSS,
                         -1.0,
                     )
                 if high >= target_price:
                     reward = target_price - entry_price
                     r_multiple = reward / risk
                     return BacktestTrade(
-                        signal["symbol"],
+                        symbol,
                         direction,
-                        entry_df["timestamp"].iloc[entry_idx].to_pydatetime(),
+                        entry_timestamp,
                         timestamp,
                         entry_price,
                         target_price,
                         stop_loss,
                         target_price,
-                        "win",
+                        TradeResult.WIN,
                         r_multiple,
                     )
             else:
                 if high >= stop_loss:
                     return BacktestTrade(
-                        signal["symbol"],
+                        symbol,
                         direction,
-                        entry_df["timestamp"].iloc[entry_idx].to_pydatetime(),
+                        entry_timestamp,
                         timestamp,
                         entry_price,
                         stop_loss,
                         stop_loss,
                         target_price,
-                        "loss",
+                        TradeResult.LOSS,
                         -1.0,
                     )
                 if low <= target_price:
                     reward = entry_price - target_price
                     r_multiple = reward / risk
                     return BacktestTrade(
-                        signal["symbol"],
+                        symbol,
                         direction,
-                        entry_df["timestamp"].iloc[entry_idx].to_pydatetime(),
+                        entry_timestamp,
                         timestamp,
                         entry_price,
                         target_price,
                         stop_loss,
                         target_price,
-                        "win",
+                        TradeResult.WIN,
                         r_multiple,
                     )
 
@@ -165,15 +185,15 @@ class BacktestEngine:
         pnl = (exit_price - entry_price) if direction == "long" else (entry_price - exit_price)
         r_multiple = pnl / risk
         return BacktestTrade(
-            signal["symbol"],
+            symbol,
             direction,
-            entry_df["timestamp"].iloc[entry_idx].to_pydatetime(),
+            entry_timestamp,
             entry_df["timestamp"].iloc[exit_idx].to_pydatetime(),
             entry_price,
             exit_price,
             stop_loss,
             target_price,
-            "timeout",
+            TradeResult.TIMEOUT,
             r_multiple,
         )
 
@@ -194,8 +214,8 @@ class BacktestEngine:
             return {"total_trades": 0, "win_rate": 0.0, "expectancy": 0.0, "profit_factor": 0.0, "max_drawdown": 0.0}
 
         total = len(trades)
-        wins = [t for t in trades if t.result == "win"]
-        losses = [t for t in trades if t.result == "loss"]
+        wins = [t for t in trades if t.result == TradeResult.WIN]
+        losses = [t for t in trades if t.result == TradeResult.LOSS]
 
         win_rate = len(wins) / total * 100
         expectancy = sum(t.r_multiple for t in trades) / total
@@ -228,4 +248,4 @@ class BacktestEngine:
         return max_dd
 
 
-__all__ = ["BacktestEngine", "BacktestTrade"]
+__all__ = ["BacktestEngine", "BacktestTrade", "TradeResult"]

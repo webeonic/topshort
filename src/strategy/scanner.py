@@ -40,6 +40,13 @@ class MarketScanner:
 
         return self.market_data.client.get_usdt_perpetual_symbols()
 
+    def get_order_block_universe(self, limit: Optional[int] = None) -> List[str]:
+        """Return curated subset for Order Block scanning."""
+        symbols = self.get_symbol_universe(top_only=True)
+        if limit and len(symbols) > limit:
+            return symbols[:limit]
+        return symbols
+
     def scan(
         self,
         top_n: int = 30,
@@ -109,7 +116,7 @@ class MarketScanner:
             raise ValueError("Order block strategy not configured")
 
         if not symbols:
-            symbols = self.get_symbol_universe(top_only=True)
+            symbols = self.get_order_block_universe()
 
         signals = self.order_block_strategy.scan(
             symbols=symbols,

@@ -107,6 +107,11 @@ VOLUME_DECREASE_THRESHOLD_PCT=20.0  # Порог снижения объема
 # Расписание
 SCAN_INTERVAL_MINUTES=60      # Интервал сканирования рынка
 MONITOR_INTERVAL_SECONDS=30   # Интервал мониторинга позиций
+
+# Режимы стратегий
+DEFAULT_MANUAL_STRATEGY_MODE=pump_cooldown  # Что запускает /scan без аргументов
+OB_CYCLE_INTERVAL_SECONDS=60   # Пауза между циклами OrderBlock
+OB_TOP_PAIRS_LIMIT=50          # Кол-во пар в непрерывном OrderBlock-скане
 ```
 
 ### 5. Получение Telegram Chat ID

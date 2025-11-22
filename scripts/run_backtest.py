@@ -70,7 +70,7 @@ def main() -> None:
         print(
             f"{trade.symbol} {trade.direction.upper()} "
             f"{trade.entry_time.isoformat()} -> {trade.exit_time.isoformat()} "
-            f"{trade.result.upper()} R={trade.r_multiple:.2f}"
+            f"{trade.result.value.upper()} R={trade.r_multiple:.2f}"
         )
 
     # Save trades to JSON for further analysis
@@ -87,7 +87,7 @@ def main() -> None:
                     "exit_price": t.exit_price,
                     "stop_loss": t.stop_loss,
                     "target_price": t.target_price,
-                    "result": t.result,
+                    "result": t.result.value,
                     "r_multiple": t.r_multiple,
                 }
                 for t in result["trades"]

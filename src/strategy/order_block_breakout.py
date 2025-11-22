@@ -476,6 +476,9 @@ class OrderBlockBreakoutStrategy:
             return True
 
         time_utc = timestamp.tz_convert(timezone.utc).time()
+        if getattr(time_utc, "tzinfo", None) is not None:
+            # Normalize to naive time to avoid comparing aware vs naive
+            time_utc = time_utc.replace(tzinfo=None)
         for session in self.config.sessions_utc:
             start = self._parse_time(session.start_utc)
             end = self._parse_time(session.end_utc)
@@ -490,7 +493,7 @@ class OrderBlockBreakoutStrategy:
     @staticmethod
     def _parse_time(value: str) -> time:
         hour, minute = map(int, value.split(":"))
-        return time(hour=hour, minute=minute, tzinfo=timezone.utc)
+        return time(hour=hour, minute=minute)
 
     # ------------------------------------------------------------------ #
     # Confirmation, scoring, utils

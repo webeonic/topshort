@@ -177,7 +177,7 @@ async def test_callback_exact_match(callback_handler, mock_update, mock_context)
 @patch.dict(os.environ, {"TELEGRAM_AUTHORIZED_USERS": "12345"})
 async def test_authorized_user(bot_commands, mock_update, mock_context):
     await bot_commands.scan(mock_update, mock_context)
-    bot_commands.engine.execute_scan_and_trade.assert_called_once()
+    bot_commands.engine.execute_pump_scan_and_trade.assert_called_once()
 ```
 
 ## 📋 Test Coverage Details

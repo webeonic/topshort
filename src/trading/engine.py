@@ -32,12 +32,18 @@ class TradingEngine:
         # Initialize components
         self.market_data = MarketData(client)
         self.top_pairs_service = TopPairsService(client, config.pairs)
-        self.order_block_strategy = OrderBlockBreakoutStrategy(self.market_data, config.order_block_strategy)
+        if config.order_block_strategy.enabled:
+            self.order_block_strategy = OrderBlockBreakoutStrategy(
+                self.market_data,
+                config.order_block_strategy,
+            )
+        else:
+            self.order_block_strategy = None
         self.scanner = MarketScanner(
             self.market_data,
             config.scanner,
             top_pairs_service=self.top_pairs_service,
-            order_block_strategy=self.order_block_strategy if config.order_block_strategy.enabled else None,
+            order_block_strategy=self.order_block_strategy,
         )
         self.risk_manager = RiskManager(session, config.trading)
         self.position_manager = PositionManager(session, client, config.trading)
@@ -51,6 +57,7 @@ class TradingEngine:
         self._position_locks: Dict[str, threading.Lock] = {}
         self._global_lock = threading.Lock()
         self._lock_timeout = 5.0  # seconds
+        self._order_block_cycle_lock = threading.Lock()
 
     def get_default_leverage(self) -> int:
         """Get default leverage from settings."""
@@ -67,6 +74,73 @@ class TradingEngine:
                 self._position_locks[symbol] = threading.Lock()
             return self._position_locks[symbol]
 
+    def execute_pump_scan_and_trade(
+        self,
+        max_signals: int = 30,
+        scan_id: Optional[str] = None,
+        triggered_by: Optional[str] = None,
+    ) -> Dict:
+        """Execute classic PumpCooldown scan."""
+        return self._execute_scan_and_trade(
+            strategy_mode="pump_cooldown",
+            max_signals=max_signals,
+            scan_id=scan_id,
+            triggered_by=triggered_by,
+        )
+
+    def execute_order_block_cycle(
+        self,
+        max_signals: Optional[int] = None,
+        scan_id: Optional[str] = None,
+        triggered_by: Optional[str] = None,
+    ) -> Dict:
+        """Execute one cycle of the Order Block scanner."""
+        if not self.config.order_block_strategy.enabled:
+            logger.info("Order Block strategy disabled - skipping cycle")
+            return {
+                "success": False,
+                "scan_id": scan_id,
+                "signals_found": 0,
+                "positions_opened": 0,
+                "reason": "Order Block strategy disabled",
+                "strategy_mode": "order_block",
+            }
+
+        if not self._order_block_cycle_lock.acquire(blocking=False):
+            logger.info("Order Block cycle already running, skipping this tick")
+            return {
+                "success": True,
+                "scan_id": scan_id,
+                "signals_found": 0,
+                "positions_opened": 0,
+                "reason": "Order Block cycle already running",
+                "strategy_mode": "order_block",
+            }
+
+        try:
+            limit = self.config.strategy_runtime.order_block_top_pairs
+            symbols = self.scanner.get_order_block_universe(limit=limit if limit > 0 else None)
+
+            if not symbols:
+                return {
+                    "success": False,
+                    "scan_id": scan_id,
+                    "signals_found": 0,
+                    "positions_opened": 0,
+                    "reason": "No symbols available for Order Block cycle",
+                    "strategy_mode": "order_block",
+                }
+
+            return self._execute_scan_and_trade(
+                strategy_mode="order_block",
+                max_signals=max_signals or self.config.order_block_strategy.max_signals,
+                scan_id=scan_id,
+                triggered_by=triggered_by or "order_block_cycle",
+                symbols_override=symbols,
+            )
+        finally:
+            self._order_block_cycle_lock.release()
+
     def execute_scan_and_trade(
         self,
         max_signals: int = 30,
@@ -74,18 +148,42 @@ class TradingEngine:
         triggered_by: Optional[str] = None,
         strategy_mode: Optional[str] = None,
     ) -> Dict:
-        """Execute market scan and open positions.
+        """Backward-compatible wrapper to preserve legacy calls."""
+        resolved_mode = strategy_mode or "pump_cooldown"
+        if resolved_mode == "order_block":
+            return self.execute_order_block_cycle(
+                max_signals=max_signals,
+                scan_id=scan_id,
+                triggered_by=triggered_by,
+            )
+        return self.execute_pump_scan_and_trade(
+            max_signals=max_signals,
+            scan_id=scan_id,
+            triggered_by=triggered_by,
+        )
+
+    def _execute_scan_and_trade(
+        self,
+        *,
+        strategy_mode: str,
+        max_signals: int,
+        scan_id: Optional[str],
+        triggered_by: Optional[str],
+        symbols_override: Optional[List[str]] = None,
+    ) -> Dict:
+        """Execute market scan for a particular strategy and open positions.
 
         Args:
             max_signals: Maximum number of signals to process
             scan_id: Optional scan ID for progress tracking
             triggered_by: Optional user_id or 'scheduler' for audit tracking
             strategy_mode: Strategy identifier ('pump_cooldown' or 'order_block')
+            symbols_override: Optional explicit symbol universe
 
         Returns: Dict with execution results
         """
         logger.info("=" * 80)
-        logger.info("Starting scan and trade cycle")
+        logger.info(f"Starting scan and trade cycle [{strategy_mode}]")
         logger.info("=" * 80)
 
         # Generate scan_id if not provided
@@ -93,17 +191,16 @@ class TradingEngine:
             scan_id = f"scan_{uuid.uuid4().hex[:12]}"
 
         # Determine scan and strategy type
-        scan_type = "manual" if triggered_by and triggered_by != "scheduler" else "scheduled"
-        strategy_mode = (
-            strategy_mode
-            if strategy_mode
-            else ("order_block" if self.config.order_block_strategy.enabled else "pump_cooldown")
-        )
+        scheduler_sources = {"scheduler", "order_block_cycle"}
+        scan_type = "manual" if triggered_by and triggered_by not in scheduler_sources else "scheduled"
 
         # Get total symbols count for progress tracking
         try:
-            if strategy_mode == "order_block":
-                symbols = self.scanner.get_symbol_universe(top_only=True)
+            if symbols_override is not None:
+                symbols = symbols_override
+            elif strategy_mode == "order_block":
+                limit = self.config.strategy_runtime.order_block_top_pairs
+                symbols = self.scanner.get_order_block_universe(limit=limit if limit > 0 else None)
             else:
                 symbols = self.client.get_usdt_perpetual_symbols()
             total_symbols = len(symbols)
@@ -155,7 +252,7 @@ class TradingEngine:
                 logger.error(f"Error updating scan progress: {e}")
 
         # Scan market for opportunities with progress tracking
-        scan_symbols = symbols if strategy_mode == "order_block" else None
+        scan_symbols = symbols_override if symbols_override is not None else symbols
         signals = self.scanner.scan(
             top_n=max_signals,
             symbols=scan_symbols,

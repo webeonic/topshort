@@ -36,8 +36,21 @@ def mock_engine():
         "pnl": 100.0,
         "pnl_pct": 10.0,
     }
-    engine.execute_scan_and_trade.return_value = {"signals_found": 5, "positions_opened": 2}
+    engine.execute_pump_scan_and_trade.return_value = {
+        "signals_found": 5,
+        "positions_opened": 2,
+        "strategy_mode": "pump_cooldown",
+    }
+    engine.execute_order_block_cycle.return_value = {
+        "signals_found": 1,
+        "positions_opened": 1,
+        "strategy_mode": "order_block",
+    }
     engine.close_all_positions.return_value = {"positions_closed": 3, "total_positions": 3}
+    engine.config = MagicMock()
+    engine.config.strategy_runtime.default_manual_strategy = "pump_cooldown"
+    engine.config.strategy_runtime.order_block_top_pairs = 50
+    engine.config.order_block_strategy.enabled = True
     return engine
 
 
@@ -79,7 +92,9 @@ def mock_update():
 @pytest.fixture
 def mock_context():
     """Create mock context."""
-    return MagicMock()
+    context = MagicMock()
+    context.args = []
+    return context
 
 
 class TestCallbackHandlerInitialization:
@@ -104,11 +119,14 @@ class TestCallbackHandlerInitialization:
         assert "cmd_stats" in callback_handler.handlers
         assert "cmd_settings" in callback_handler.handlers
         assert "cmd_help" in callback_handler.handlers
+        assert "cmd_main" in callback_handler.handlers
+        assert "cmd_scan" in callback_handler.handlers
 
         # Check pattern handlers
         assert "pattern:pos_details_" in callback_handler.handlers
         assert "pattern:pos_refresh_" in callback_handler.handlers
         assert "pattern:confirm_" in callback_handler.handlers
+        assert "pattern:scan_strategy_" in callback_handler.handlers
 
 
 class TestCallbackHandlerRegistration:
@@ -239,6 +257,24 @@ class TestCommandCallbacks:
 
             mock_commands.start.assert_called_once_with(mock_update, mock_context)
 
+    @pytest.mark.asyncio
+    async def test_handle_main_menu(self, callback_handler, mock_update, mock_context):
+        """Test returning to main menu."""
+        with patch("src.bot.commands.BotCommands") as mock_commands_class:
+            mock_commands = AsyncMock()
+            mock_commands_class.return_value = mock_commands
+
+            await callback_handler.handle_main_menu(mock_update, mock_context)
+
+            mock_commands.show_menu.assert_called_once_with(mock_update, mock_context)
+
+    @pytest.mark.asyncio
+    async def test_handle_scan_menu(self, callback_handler, mock_update, mock_context):
+        """Test showing strategy selection menu."""
+        await callback_handler.handle_scan_menu(mock_update, mock_context)
+
+        mock_update.callback_query.edit_message_text.assert_awaited()
+
 
 class TestPositionCallbacks:
     """Test position-related callback handlers."""
@@ -334,7 +370,7 @@ class TestTradingControlCallbacks:
         """Test manual scan callback."""
         await callback_handler.handle_trading_scan(mock_update, mock_context)
 
-        callback_handler.engine.execute_scan_and_trade.assert_called_once()
+        callback_handler.engine.execute_pump_scan_and_trade.assert_called_once()
         mock_update.callback_query.answer.assert_called()
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
@@ -348,6 +384,30 @@ class TestTradingControlCallbacks:
         callback_handler.engine.close_all_positions.assert_called_once_with("manual")
         mock_update.callback_query.answer.assert_called()
         mock_update.callback_query.edit_message_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_scan_strategy_order_block(self, callback_handler, mock_update, mock_context):
+        """Test strategy selection triggers manual scan."""
+        mock_update.callback_query.data = "scan_strategy_order_block"
+        with patch("src.bot.commands.BotCommands") as mock_commands_class:
+            mock_commands = AsyncMock()
+            mock_commands.scan = AsyncMock()
+            mock_commands_class.return_value = mock_commands
+
+            await callback_handler.handle_scan_strategy(mock_update, mock_context)
+
+            mock_commands.scan.assert_awaited_once()
+            mock_update.callback_query.edit_message_text.assert_awaited()
+            assert mock_context.args == ["ob"]
+
+    @pytest.mark.asyncio
+    async def test_handle_scan_strategy_unknown(self, callback_handler, mock_update, mock_context):
+        """Test unknown strategy selection shows alert."""
+        mock_update.callback_query.data = "scan_strategy_unknown"
+
+        await callback_handler.handle_scan_strategy(mock_update, mock_context)
+
+        mock_update.callback_query.answer.assert_called_with("⚠️ Неизвестная стратегия", show_alert=True)
 
 
 class TestConfirmationCallbacks:

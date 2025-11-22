@@ -6,7 +6,7 @@ from functools import wraps
 from typing import Callable, Dict
 
 from sqlalchemy.orm import Session
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from ..database.repository import CallbackLogRepository, KeyboardStateRepository
@@ -86,6 +86,8 @@ class CallbackHandler:
         self.register("cmd_stats", self.handle_stats)
         self.register("cmd_settings", self.handle_settings)
         self.register("cmd_help", self.handle_help)
+        self.register("cmd_main", self.handle_main_menu)
+        self.register("cmd_scan", self.handle_scan_menu)
 
         # Position callbacks
         self.register_pattern("pos_details_", self.handle_position_details)
@@ -97,6 +99,7 @@ class CallbackHandler:
         self.register("trading_pause", self.handle_trading_pause)
         self.register("trading_scan", self.handle_trading_scan)
         self.register("trading_closeall", self.handle_trading_closeall)
+        self.register_pattern("scan_strategy_", self.handle_scan_strategy)
 
         # Confirmation callbacks
         self.register_pattern("confirm_", self.handle_confirm)
@@ -214,6 +217,61 @@ class CallbackHandler:
         await commands.start(update, context)
 
     @log_callback(success=True)
+    async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle return to main menu."""
+        from .commands import BotCommands
+
+        commands = BotCommands(self.session, self.engine)
+        await commands.show_menu(update, context)
+
+    @log_callback(success=True)
+    async def handle_scan_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show strategy selection for manual scan."""
+        query = update.callback_query
+
+        strategies = [
+            ("🚀 Pump & Cooldown", "pump_cooldown"),
+        ]
+        if getattr(getattr(self.engine.config, "order_block_strategy", None), "enabled", False):
+            strategies.append(("🧱 Order Block", "order_block"))
+
+        buttons = [[InlineKeyboardButton(label, callback_data=f"scan_strategy_{mode}")] for label, mode in strategies]
+        buttons.append([InlineKeyboardButton("🔙 Back", callback_data="cmd_main")])
+
+        keyboard = InlineKeyboardMarkup(buttons)
+        await query.edit_message_text(
+            "🔍 *Ручной скан*\n\nВыберите стратегию и бот сразу запустит анализ.",
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+
+    @log_callback(success=True)
+    async def handle_scan_strategy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Execute manual scan for selected strategy."""
+        from .commands import BotCommands
+
+        query = update.callback_query
+        strategy_mode = query.data.replace("scan_strategy_", "", 1)
+        alias_map = {"pump_cooldown": "pc", "order_block": "ob"}
+        label_map = {
+            "pump_cooldown": "Pump & Cooldown",
+            "order_block": "Order Block",
+        }
+
+        if strategy_mode not in alias_map:
+            await query.answer("⚠️ Неизвестная стратегия", show_alert=True)
+            return
+
+        await query.edit_message_text(
+            f"⏳ Запускаю *{label_map[strategy_mode]}* сканирование...",
+            parse_mode="Markdown",
+        )
+
+        commands = BotCommands(self.session, self.engine)
+        context.args = [alias_map[strategy_mode]]
+        await commands.scan(update, context)
+
+    @log_callback(success=True)
     async def handle_position_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position details callback."""
         query = update.callback_query
@@ -303,7 +361,14 @@ class CallbackHandler:
         query = update.callback_query
         await query.answer("🔍 Starting market scan...")
 
-        result = self.engine.execute_scan_and_trade()
+        allowed_modes = {"pump_cooldown", "order_block"}
+        default_mode = getattr(self.engine.config.strategy_runtime, "default_manual_strategy", "pump_cooldown")
+        strategy_mode = default_mode if default_mode in allowed_modes else "pump_cooldown"
+
+        if strategy_mode == "order_block":
+            result = self.engine.execute_order_block_cycle(triggered_by=str(query.from_user.id))
+        else:
+            result = self.engine.execute_pump_scan_and_trade(triggered_by=str(query.from_user.id))
 
         message = f"""
 ✅ *Scan Completed*

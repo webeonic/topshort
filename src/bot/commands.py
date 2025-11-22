@@ -134,7 +134,7 @@ Automatic trading bot for short positions on Binance Futures.
 /set - Change settings
 /pause - Pause trading
 /resume - Resume trading
-/scan - Start market scan manually
+/scan - Start market scan manually (`/scan pc` или `/scan ob`)
 /pairs - Show top pairs universe
 /close - Close position by symbol
 /closeall - Close all positions
@@ -434,17 +434,24 @@ The bot automatically scans the market every hour and opens short positions on c
         bar = "█" * filled + "░" * empty
         return f"[{bar}] {progress_pct:.1f}%"
 
+    def _format_processed_line(self, processed: int, total: int, strategy_mode: str) -> str:
+        """Format processed symbols line with optional approximation marker."""
+        total_display = f"~{total}" if strategy_mode != "order_block" else str(total)
+        return f"Processed: {processed}/{total_display} symbols"
+
     @require_auth
     async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scan command with real-time progress updates."""
         try:
-            requested_mode = None
+            allowed_modes = {"pump_cooldown", "order_block"}
+            default_mode = self.engine.config.strategy_runtime.default_manual_strategy
+            strategy_mode = default_mode if default_mode in allowed_modes else "pump_cooldown"
             if context.args:
                 strategy_arg = context.args[0].lower()
                 if strategy_arg in {"ob", "orderblock", "order_block", "smc"}:
-                    requested_mode = "order_block"
+                    strategy_mode = "order_block"
                 elif strategy_arg in {"pump", "cooldown", "pc"}:
-                    requested_mode = "pump_cooldown"
+                    strategy_mode = "pump_cooldown"
 
             # Generate unique scan ID
             scan_id = f"scan_{uuid.uuid4().hex[:12]}"
@@ -452,20 +459,29 @@ The bot automatically scans the market every hour and opens short positions on c
 
             # Initialize scan progress in database
             # First get total symbols count (rough estimate for initial creation)
-            total_symbols = 200  # Rough estimate, will be updated
+            if strategy_mode == "order_block":
+                limit_value = max(self.engine.config.strategy_runtime.order_block_top_pairs or 0, 0)
+                universe_limit = limit_value if limit_value > 0 else None
+                universe = self.engine.scanner.get_order_block_universe(universe_limit)
+                total_symbols = len(universe)
+                if total_symbols == 0 and limit_value > 0:
+                    total_symbols = limit_value
+            else:
+                total_symbols = 200  # Rough estimate for pump cooldown
 
             self.scan_progress_repo.create(
                 scan_id=scan_id, scan_type="manual", total_symbols=total_symbols, triggered_by=user_id
             )
 
             # Send initial message
-            strategy_label = "Order Block Breakout" if (requested_mode == "order_block") else "Pump & Cooldown"
+            strategy_label = "Order Block Breakout" if strategy_mode == "order_block" else "Pump & Cooldown"
+            processed_line = self._format_processed_line(0, total_symbols, strategy_mode)
 
             initial_message = await update.effective_message.reply_text(
                 "🔍 *Starting market scan...*\n\n"
                 f"Strategy: *{strategy_label}*\n"
                 f"{self._format_progress_bar(0)}\n"
-                "Processed: 0/~200 symbols\n"
+                f"{processed_line}\n"
                 "Signals found: 0",
                 parse_mode="Markdown",
             )
@@ -493,10 +509,13 @@ The bot automatically scans the market every hour and opens short positions on c
                             progress_bar = self._format_progress_bar(progress.progress_pct)
 
                             status_emoji = "🔍" if progress.status == "running" else "✅"
+                            processed_line = self._format_processed_line(
+                                progress.processed_symbols, progress.total_symbols, strategy_mode
+                            )
                             message = (
                                 f"{status_emoji} *Market scan in progress...*\n\n"
                                 f"{progress_bar}\n"
-                                f"Processed: {progress.processed_symbols}/{progress.total_symbols} symbols\n"
+                                f"{processed_line}\n"
                                 f"Signals found: {progress.signals_found}"
                             )
 
@@ -528,12 +547,17 @@ The bot automatically scans the market every hour and opens short positions on c
 
             # Execute scan in thread pool (blocking operation)
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.engine.execute_scan_and_trade(
-                    max_signals=30, scan_id=scan_id, triggered_by=user_id, strategy_mode=requested_mode
-                ),
-            )
+            if strategy_mode == "order_block":
+
+                def executor_fn():
+                    return self.engine.execute_order_block_cycle(max_signals=30, scan_id=scan_id, triggered_by=user_id)
+
+            else:
+
+                def executor_fn():
+                    return self.engine.execute_pump_scan_and_trade(max_signals=30, scan_id=scan_id, triggered_by=user_id)
+
+            result = await loop.run_in_executor(None, executor_fn)
 
             # Mark scan as complete
             scan_complete = True

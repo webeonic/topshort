@@ -445,9 +445,23 @@ def mock_trading_engine():
     engine.position_manager.update_positions = MagicMock()
 
     # Scan and trade
-    engine.execute_scan_and_trade.return_value = {"signals_found": 5, "positions_opened": 2}
+    engine.execute_pump_scan_and_trade.return_value = {
+        "signals_found": 5,
+        "positions_opened": 2,
+        "strategy_mode": "pump_cooldown",
+    }
+    engine.execute_order_block_cycle.return_value = {
+        "signals_found": 2,
+        "positions_opened": 1,
+        "strategy_mode": "order_block",
+    }
 
     # Close all
     engine.close_all_positions.return_value = {"positions_closed": 3, "total_positions": 3}
 
+    engine.scanner = MagicMock()
+    engine.scanner.get_order_block_universe.return_value = ["BTC/USDT:USDT"] * 50
+    engine.config = MagicMock()
+    engine.config.strategy_runtime.default_manual_strategy = "pump_cooldown"
+    engine.config.strategy_runtime.order_block_top_pairs = 50
     return engine

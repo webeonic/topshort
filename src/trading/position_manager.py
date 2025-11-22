@@ -383,14 +383,15 @@ class PositionManager:
 
                 tp_reached = False
                 sl_reached = False
+                stop_loss_price = position.stop_loss_price
                 if position.side == "short":
                     tp_reached = current_price <= position.take_profit_price
-                    if position.stop_loss_price:
-                        sl_reached = current_price >= position.stop_loss_price
+                    if stop_loss_price is not None and stop_loss_price > 0:
+                        sl_reached = current_price >= stop_loss_price
                 else:
                     tp_reached = current_price >= position.take_profit_price
-                    if position.stop_loss_price:
-                        sl_reached = current_price <= position.stop_loss_price
+                    if stop_loss_price is not None and stop_loss_price > 0:
+                        sl_reached = current_price <= stop_loss_price
 
                 if tp_reached:
                     logger.info(

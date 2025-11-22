@@ -43,8 +43,9 @@ def init_keyboard_templates(session: Session):
         ("💼 Positions", "cmd_positions", 0, 1, "show_positions"),
         ("📜 History", "cmd_history", 1, 0, "show_history"),
         ("📈 Stats", "cmd_stats", 1, 1, "show_stats"),
-        ("⚙️ Settings", "cmd_settings", 2, 0, "show_settings"),
-        ("❓ Help", "cmd_help", 2, 1, "show_help"),
+        ("🔍 Scan", "cmd_scan", 2, 0, "show_scan_menu"),
+        ("⚙️ Settings", "cmd_settings", 2, 1, "show_settings"),
+        ("❓ Help", "cmd_help", 3, 0, "show_help"),
     ]
 
     for label, callback_data, row, col, action in buttons_main:
@@ -194,7 +195,7 @@ def update_keyboard_templates(session: Session):
 
     logger.info("Checking for keyboard template updates...")
 
-    # Example: Add new button to main menu if it doesn't exist
+    # Example: Add new buttons to main menu if they don't exist
     main_menu = template_repo.get_by_name("main_menu")
     if main_menu:
         # Check if trading controls button exists
@@ -212,5 +213,18 @@ def update_keyboard_templates(session: Session):
                 action="show_trading_controls",
             )
             logger.info("✓ Added trading button to main menu")
+
+        has_scan_button = any(b.callback_data == "cmd_scan" for b in existing_buttons)
+        if not has_scan_button:
+            button_repo.create(
+                template_id=main_menu.id,
+                label="🔍 Scan",
+                callback_data="cmd_scan",
+                row_position=2,
+                column_position=0,
+                button_type="callback",
+                action="show_scan_menu",
+            )
+            logger.info("✓ Added scan button to main menu")
 
     logger.info("✅ Keyboard templates update complete")

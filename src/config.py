@@ -124,6 +124,15 @@ class ScannerConfig:
 
 
 @dataclass
+class StrategyRuntimeConfig:
+    """Runtime tuning parameters for strategy execution."""
+
+    default_manual_strategy: str
+    order_block_cycle_interval_seconds: int
+    order_block_top_pairs: int
+
+
+@dataclass
 class SchedulerConfig:
     """Scheduler configuration."""
 
@@ -148,6 +157,7 @@ class Config:
     database: DatabaseConfig
     trading: TradingConfig
     scanner: ScannerConfig
+    strategy_runtime: StrategyRuntimeConfig
     pairs: PairsConfig
     order_block_strategy: OrderBlockStrategyConfig
     scheduler: SchedulerConfig
@@ -178,6 +188,11 @@ def load_config() -> Config:
             cooldown_period_hours_min=int(os.getenv("COOLDOWN_PERIOD_HOURS_MIN", "4")),
             cooldown_period_hours_max=int(os.getenv("COOLDOWN_PERIOD_HOURS_MAX", "8")),
             volume_decrease_threshold_pct=float(os.getenv("VOLUME_DECREASE_THRESHOLD_PCT", "20.0")),
+        ),
+        strategy_runtime=StrategyRuntimeConfig(
+            default_manual_strategy=os.getenv("DEFAULT_MANUAL_STRATEGY_MODE", "pump_cooldown"),
+            order_block_cycle_interval_seconds=int(os.getenv("OB_CYCLE_INTERVAL_SECONDS", "60")),
+            order_block_top_pairs=int(os.getenv("OB_TOP_PAIRS_LIMIT", "50")),
         ),
         scheduler=SchedulerConfig(
             scan_interval_minutes=int(os.getenv("SCAN_INTERVAL_MINUTES", "60")),
