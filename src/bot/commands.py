@@ -565,45 +565,57 @@ The bot automatically scans the market every hour and opens short positions on c
         initial_message,
     ):
         strategy_label = self._strategy_label(strategy_mode)
-        await initial_message.edit_text(
-            "🔄 *Запуск сканирования...*\n\n" f"Стратегия: *{strategy_label}*",
-            parse_mode="Markdown",
-        )
-
-        total_symbols = await self._estimate_total_symbols(strategy_mode)
-        await self._run_blocking(
-            self.scan_progress_repo.create,
-            scan_id=scan_id,
-            scan_type="manual",
-            total_symbols=total_symbols,
-            triggered_by=user_id,
-        )
-
         stop_event: asyncio.Event | None = None
         progress_task: asyncio.Task | None = None
-        if self.scan_queue:
-            stop_event = asyncio.Event()
-            progress_task = asyncio.create_task(self._progress_monitor(scan_id, strategy_mode, initial_message, stop_event))
+        result: dict | None = None
 
         try:
+            await initial_message.edit_text(
+                "🔄 *Запуск сканирования...*\n\n" f"Стратегия: *{strategy_label}*",
+                parse_mode="Markdown",
+            )
+
+            total_symbols = await self._estimate_total_symbols(strategy_mode)
+            await self._run_blocking(
+                self.scan_progress_repo.create,
+                scan_id=scan_id,
+                scan_type="manual",
+                total_symbols=total_symbols,
+                triggered_by=user_id,
+            )
+
+            if self.scan_queue:
+                stop_event = asyncio.Event()
+                progress_task = asyncio.create_task(
+                    self._progress_monitor(scan_id, strategy_mode, initial_message, stop_event)
+                )
+
             result = await self._execute_scan_cycle(strategy_mode, scan_id, user_id)
         except Exception as exc:
+            logger.error(f"Error executing manual scan: {exc}", exc_info=True)
+            await self._handle_scan_failure(update, initial_message, exc)
+            return
+        finally:
             if stop_event:
                 stop_event.set()
             if progress_task:
                 await self._cleanup_task(progress_task)
-            logger.error(f"Error executing manual scan: {exc}", exc_info=True)
-            await initial_message.edit_text(f"❌ Ошибка сканирования:\n{exc}", parse_mode="Markdown")
-            return
 
-        if stop_event:
-            stop_event.set()
-        if progress_task:
-            await self._cleanup_task(progress_task)
-        if strategy_mode == "order_block" and result.get("reason") == "Order Block cycle already running":
+        if strategy_mode == "order_block" and result and result.get("reason") == "Order Block cycle already running":
             await self._notify_order_block_cycle_busy(update, initial_message, result)
             return
         await self._publish_scan_result(update, initial_message, result)
+
+    async def _handle_scan_failure(self, update: Update, message, exc: Exception):
+        error_text = f"❌ Ошибка сканирования:\n{exc}"
+        try:
+            await message.edit_text(error_text, parse_mode="Markdown")
+        except Exception as edit_exc:
+            logger.debug("Failed to edit scan error message: %s", edit_exc)
+            try:
+                await update.effective_message.reply_text(error_text, parse_mode="Markdown")
+            except Exception as notify_exc:
+                logger.error("Failed to notify user about scan error: %s", notify_exc)
 
     async def _notify_order_block_cycle_busy(self, update: Update, message, result: dict):
         eta_seconds = result.get("eta_seconds")

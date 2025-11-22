@@ -486,6 +486,55 @@ class TestScanCommand:
         create_kwargs = bot_commands.scan_progress_repo.create.call_args.kwargs
         assert create_kwargs["total_symbols"] == 0
 
+    @pytest.mark.asyncio
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
+    async def test_run_scan_request_reports_setup_error(self, bot_commands, mock_update, mock_context):
+        """Early failures should notify user about scan error."""
+
+        async def immediate(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        bot_commands._run_blocking = immediate
+        bot_commands.scan_progress_repo.create.side_effect = Exception("db down")
+
+        initial_message = AsyncMock()
+        initial_message.edit_text = AsyncMock()
+
+        await bot_commands._run_scan_request(
+            update=mock_update,
+            context=mock_context,
+            strategy_mode="pump_cooldown",
+            scan_id="scan_123",
+            user_id="user",
+            initial_message=initial_message,
+        )
+
+        assert any("Ошибка сканирования" in args.args[0] for args in initial_message.edit_text.await_args_list)
+
+    @pytest.mark.asyncio
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
+    async def test_run_scan_request_falls_back_to_reply_on_edit_error(self, bot_commands, mock_update, mock_context):
+        """If editing fails, fallback message is sent via reply."""
+
+        async def immediate(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        bot_commands._run_blocking = immediate
+
+        initial_message = AsyncMock()
+        initial_message.edit_text = AsyncMock(side_effect=RuntimeError("cannot edit"))
+
+        await bot_commands._run_scan_request(
+            update=mock_update,
+            context=mock_context,
+            strategy_mode="pump_cooldown",
+            scan_id="scan_123",
+            user_id="user",
+            initial_message=initial_message,
+        )
+
+        mock_update.effective_message.reply_text.assert_awaited()
+
 
 class TestCloseCommand:
     """Test /close command."""
