@@ -122,6 +122,7 @@ class MarketScanner:
             symbols=symbols,
             top_n=top_n,
             progress_callback=progress_callback,
+            max_workers=getattr(self.order_block_strategy.config, "max_workers", None),
         )
 
         for i, signal in enumerate(signals[:5], 1):

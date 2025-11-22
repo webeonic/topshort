@@ -70,6 +70,7 @@ class OrderBlockStrategyConfig:
     atr_target_multiplier: float
     risk_per_trade_pct: float
     max_signals: int
+    max_workers: int
     timeframes: List[str] = field(default_factory=list)
     entry_timeframe: str = "15m"
     confirmation_timeframe: str = "5m"
@@ -166,6 +167,7 @@ class Config:
 
 def load_config() -> Config:
     """Load configuration from environment variables."""
+    default_ob_workers = _default_order_block_workers()
     return Config(
         binance=BinanceConfig(
             api_key=os.getenv("BINANCE_API_KEY", ""),
@@ -223,6 +225,7 @@ def load_config() -> Config:
             atr_target_multiplier=float(os.getenv("OB_ATR_TARGET_MULTIPLIER", "2.0")),
             risk_per_trade_pct=float(os.getenv("OB_RISK_PER_TRADE_PCT", "1.0")),
             max_signals=int(os.getenv("OB_MAX_SIGNALS", "10")),
+            max_workers=int(os.getenv("OB_MAX_WORKERS", str(default_ob_workers))),
             timeframes=_parse_timeframes(os.getenv("OB_TIMEFRAMES", "1d,4h,1h,15m,5m")),
             entry_timeframe=os.getenv("OB_ENTRY_TIMEFRAME", "15m"),
             confirmation_timeframe=os.getenv("OB_CONFIRMATION_TIMEFRAME", "5m"),
@@ -296,6 +299,12 @@ def _parse_sessions(value: str) -> List[SessionWindow]:
         ]
 
     return sessions
+
+
+def _default_order_block_workers() -> int:
+    """Calculate default worker pool size for Order Block scans."""
+    cpu_count = os.cpu_count() or 4
+    return max(8, cpu_count * 2)
 
 
 # Global config instance
