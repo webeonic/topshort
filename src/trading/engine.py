@@ -32,12 +32,18 @@ class TradingEngine:
         # Initialize components
         self.market_data = MarketData(client)
         self.top_pairs_service = TopPairsService(client, config.pairs)
-        self.order_block_strategy = OrderBlockBreakoutStrategy(self.market_data, config.order_block_strategy)
+        if config.order_block_strategy.enabled:
+            self.order_block_strategy = OrderBlockBreakoutStrategy(
+                self.market_data,
+                config.order_block_strategy,
+            )
+        else:
+            self.order_block_strategy = None
         self.scanner = MarketScanner(
             self.market_data,
             config.scanner,
             top_pairs_service=self.top_pairs_service,
-            order_block_strategy=self.order_block_strategy if config.order_block_strategy.enabled else None,
+            order_block_strategy=self.order_block_strategy,
         )
         self.risk_manager = RiskManager(session, config.trading)
         self.position_manager = PositionManager(session, client, config.trading)

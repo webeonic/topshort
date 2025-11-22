@@ -461,6 +461,23 @@ class TestScanCommand:
         bot_commands.engine.execute_order_block_cycle.assert_called_once()
         mock_message.edit_text.assert_called()
 
+    @pytest.mark.asyncio
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
+    async def test_scan_order_block_empty_universe(self, bot_commands, mock_update, mock_context):
+        """Order Block scan should report 0 symbols when universe is empty and limit is 0."""
+        mock_context.args = ["ob"]
+        bot_commands.engine.config.strategy_runtime.order_block_top_pairs = 0
+        bot_commands.engine.scanner.get_order_block_universe.return_value = []
+        mock_message = AsyncMock()
+        mock_message.edit_text = AsyncMock()
+        mock_update.effective_message.reply_text.return_value = mock_message
+
+        await bot_commands.scan(mock_update, mock_context)
+
+        bot_commands.engine.execute_order_block_cycle.assert_called_once()
+        create_kwargs = bot_commands.scan_progress_repo.create.call_args.kwargs
+        assert create_kwargs["total_symbols"] == 0
+
 
 class TestCloseCommand:
     """Test /close command."""

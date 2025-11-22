@@ -455,9 +455,12 @@ The bot automatically scans the market every hour and opens short positions on c
             # Initialize scan progress in database
             # First get total symbols count (rough estimate for initial creation)
             if strategy_mode == "order_block":
-                limit_value = self.engine.config.strategy_runtime.order_block_top_pairs or 0
-                universe = self.engine.scanner.get_order_block_universe(limit_value if limit_value > 0 else None)
-                total_symbols = len(universe) or max(limit_value, 1)
+                limit_value = max(self.engine.config.strategy_runtime.order_block_top_pairs or 0, 0)
+                universe_limit = limit_value if limit_value > 0 else None
+                universe = self.engine.scanner.get_order_block_universe(universe_limit)
+                total_symbols = len(universe)
+                if total_symbols == 0 and limit_value > 0:
+                    total_symbols = limit_value
             else:
                 total_symbols = 200  # Rough estimate for pump cooldown
 

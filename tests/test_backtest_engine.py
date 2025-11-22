@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
-from src.backtesting.engine import BacktestEngine
+from src.backtesting.engine import BacktestEngine, TradeResult
 
 
 def _build_dataframe(prices: list[float]) -> pd.DataFrame:
@@ -37,7 +39,7 @@ def test_simulate_trade_long_win():
     trade = engine._simulate_trade(signal, entry_df, 0)
 
     assert trade is not None
-    assert trade.result == "win"
+    assert trade.result == TradeResult.WIN
     assert trade.r_multiple > 0
 
 
@@ -56,6 +58,25 @@ def test_simulate_trade_short_loss():
     trade = engine._simulate_trade(signal, entry_df, 0)
 
     assert trade is not None
-    assert trade.result in {"win", "loss", "timeout"}
-    if trade.result == "loss":
+    assert trade.result in {TradeResult.WIN, TradeResult.LOSS, TradeResult.TIMEOUT}
+    if trade.result == TradeResult.LOSS:
         assert trade.r_multiple == -1.0
+
+
+def test_simulate_trade_rejects_zero_risk_signal(caplog: pytest.LogCaptureFixture):
+    """Signals with stop equal to entry should be skipped."""
+    strategy = SimpleNamespace(config=SimpleNamespace(entry_timeframe="15m", confirmation_timeframe="5m", swing_length=3))
+    engine = BacktestEngine(strategy, trade_horizon=5)
+    entry_df = _build_dataframe([100, 101, 102, 103])
+    signal = {
+        "symbol": "TEST/USDT:USDT",
+        "direction": "long",
+        "stop_loss": 101.0,
+        "targets": [110.0],
+    }
+
+    with caplog.at_level(logging.WARNING):
+        trade = engine._simulate_trade(signal, entry_df, 0)
+
+    assert trade is None
+    assert any("zero risk" in record.message for record in caplog.records)
