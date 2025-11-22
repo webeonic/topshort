@@ -42,7 +42,16 @@ def mock_engine():
             "unrealized_pnl_pct": 10.0,
         }
     ]
-    engine.execute_scan_and_trade.return_value = {"signals_found": 5, "positions_opened": 2}
+    engine.execute_pump_scan_and_trade.return_value = {
+        "signals_found": 5,
+        "positions_opened": 2,
+        "strategy_mode": "pump_cooldown",
+    }
+    engine.execute_order_block_cycle.return_value = {
+        "signals_found": 2,
+        "positions_opened": 1,
+        "strategy_mode": "order_block",
+    }
     engine.close_all_positions.return_value = {"positions_closed": 3, "total_positions": 3}
     engine.position_manager.close_position_by_symbol.return_value = {
         "symbol": "BTCUSDT",
@@ -51,6 +60,11 @@ def mock_engine():
         "pnl": 100.0,
         "pnl_pct": 10.0,
     }
+    engine.scanner = MagicMock()
+    engine.scanner.get_order_block_universe.return_value = ["BTC/USDT:USDT"] * 50
+    engine.config = MagicMock()
+    engine.config.strategy_runtime.default_manual_strategy = "pump_cooldown"
+    engine.config.strategy_runtime.order_block_top_pairs = 50
     return engine
 
 
@@ -63,6 +77,7 @@ def bot_commands(mock_session, mock_engine):
     commands.history_repo = MagicMock()
     commands.bot_status_repo = MagicMock()
     commands.signal_repo = MagicMock()
+    commands.scan_progress_repo = MagicMock()
     commands.keyboard_builder = MagicMock()
     return commands
 
@@ -421,8 +436,8 @@ class TestScanCommand:
 
         await bot_commands.scan(mock_update, mock_context)
 
-        # Verify scan was executed
-        bot_commands.engine.execute_scan_and_trade.assert_called_once()
+        # Verify Pump & Cooldown scan was executed by default
+        bot_commands.engine.execute_pump_scan_and_trade.assert_called_once()
 
         # Verify initial message was sent
         mock_update.effective_message.reply_text.assert_called_once()
@@ -431,6 +446,20 @@ class TestScanCommand:
 
         # Verify final message was edited
         assert mock_message.edit_text.called
+
+    @pytest.mark.asyncio
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
+    async def test_scan_order_block_mode(self, bot_commands, mock_update, mock_context):
+        """Ensure /scan ob triggers Order Block strategy."""
+        mock_context.args = ["ob"]
+        mock_message = AsyncMock()
+        mock_message.edit_text = AsyncMock()
+        mock_update.effective_message.reply_text.return_value = mock_message
+
+        await bot_commands.scan(mock_update, mock_context)
+
+        bot_commands.engine.execute_order_block_cycle.assert_called_once()
+        mock_message.edit_text.assert_called()
 
 
 class TestCloseCommand:

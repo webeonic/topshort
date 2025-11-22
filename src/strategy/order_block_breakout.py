@@ -490,7 +490,7 @@ class OrderBlockBreakoutStrategy:
     @staticmethod
     def _parse_time(value: str) -> time:
         hour, minute = map(int, value.split(":"))
-        return time(hour=hour, minute=minute, tzinfo=timezone.utc)
+        return time(hour=hour, minute=minute)
 
     # ------------------------------------------------------------------ #
     # Confirmation, scoring, utils

@@ -43,8 +43,8 @@ class SchedulerJobs:
             # Update last scan time
             self.bot_status_repo.update_scan_time()
 
-            # Execute scan and trade
-            result = self.engine.execute_scan_and_trade(max_signals=30)
+            # Execute Pump & Cooldown scan
+            result = self.engine.execute_pump_scan_and_trade(max_signals=30, triggered_by="scheduler")
 
             # Send notification
             await self.telegram_bot.notify_scan_complete(result)
@@ -59,6 +59,31 @@ class SchedulerJobs:
         except Exception as e:
             logger.error(f"Error in scan_and_trade_job: {e}", exc_info=True)
             await self.telegram_bot.notify_error(f"Scan error: {str(e)}")
+
+    async def order_block_cycle_job(self):
+        """High-frequency Order Block scanner."""
+        if not self.config.order_block_strategy.enabled:
+            return
+
+        try:
+            bot_status = self.bot_status_repo.get()
+            if not bot_status.is_active or bot_status.is_paused:
+                logger.debug("Bot inactive/paused, skipping Order Block cycle")
+                return
+
+            result = self.engine.execute_order_block_cycle(triggered_by="scheduler")
+            if (result.get("signals_found") or result.get("positions_opened")) and result.get(
+                "strategy_mode"
+            ) == "order_block":
+                await self.telegram_bot.notify_scan_complete(result)
+
+            if result.get("opened_positions"):
+                for pos_info in result["opened_positions"]:
+                    await self.telegram_bot.notify_position_opened(pos_info)
+
+        except Exception as e:
+            logger.error(f"Error in order_block_cycle_job: {e}", exc_info=True)
+            await self.telegram_bot.notify_error(f"Order Block scan error: {str(e)}")
 
     async def monitor_positions_job(self):
         """Scheduled job to monitor open positions."""
@@ -133,6 +158,23 @@ class SchedulerJobs:
             max_instances=1,  # Prevent overlapping runs
         )
         logger.info(f"Scheduled scan_and_trade job: every {scan_interval_minutes} minutes")
+
+        # Job 1b: Continuous Order Block scan
+        order_block_interval = self.config.strategy_runtime.order_block_cycle_interval_seconds
+        if self.config.order_block_strategy.enabled and order_block_interval > 0:
+            self.scheduler.add_job(
+                self.order_block_cycle_job,
+                trigger=IntervalTrigger(seconds=order_block_interval),
+                id="order_block_cycle",
+                name="Order Block Cycle",
+                replace_existing=True,
+                max_instances=1,
+            )
+            logger.info(
+                "Scheduled order_block_cycle job: every %s seconds (top %s pairs)",
+                order_block_interval,
+                self.config.strategy_runtime.order_block_top_pairs,
+            )
 
         # Job 2: Monitor positions (every 30 seconds by default)
         monitor_interval_seconds = self.config.scheduler.monitor_interval_seconds

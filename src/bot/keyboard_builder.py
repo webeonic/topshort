@@ -250,6 +250,7 @@ class KeyboardTemplates:
             {"text": "💼 Positions", "callback_data": "cmd_positions"},
             {"text": "📜 History", "callback_data": "cmd_history"},
             {"text": "📈 Stats", "callback_data": "cmd_stats"},
+            {"text": "🔍 Scan", "callback_data": "cmd_scan"},
             {"text": "⚙️ Settings", "callback_data": "cmd_settings"},
             {"text": "❓ Help", "callback_data": "cmd_help"},
         ]
