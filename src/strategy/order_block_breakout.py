@@ -33,6 +33,7 @@ TIMEFRAME_TO_MINUTES = {
 }
 
 MAX_CANDLES_PER_REQUEST = 1500
+TIMEFRAME_WORKER_CAP = 16
 
 
 class OrderBlockSignal(TypedDict, total=False):
@@ -173,8 +174,13 @@ class OrderBlockBreakoutStrategy:
         if not symbols:
             return []
 
-        workers = max_workers or self._optimal_workers(len(symbols))
-        logger.info(f"Scanning {len(symbols)} symbols for order block setups with {workers} workers")
+        workers = self._determine_symbol_workers(len(symbols), max_workers)
+        logger.info(
+            "Scanning %s symbols for order block setups with %s workers (limit=%s)",
+            len(symbols),
+            workers,
+            max_workers or self.config.max_workers,
+        )
 
         results: List[OrderBlockSignal] = []
         processed = 0
@@ -205,23 +211,49 @@ class OrderBlockBreakoutStrategy:
     # ------------------------------------------------------------------ #
     def _load_timeframes(self, symbol: str) -> Dict[str, pd.DataFrame]:
         datasets: Dict[str, pd.DataFrame] = {}
-        for tf in self.config.timeframes:
+        timeframes = list(self.config.timeframes)
+        if not timeframes:
+            return datasets
+
+        def fetch_timeframe(tf: str) -> tuple[str, Optional[pd.DataFrame]]:
             tf_minutes = TIMEFRAME_TO_MINUTES.get(tf)
             if not tf_minutes:
-                logger.warning(f"Unsupported timeframe '{tf}' in config")
-                continue
+                logger.warning("Unsupported timeframe '%s' in config", tf)
+                return tf, None
 
             candles_needed = self._candles_for_timeframe(tf_minutes)
             try:
                 ohlcv = self.market_data.client.get_ohlcv(symbol, timeframe=tf, limit=candles_needed)
-            except Exception as exc:
-                logger.error(f"Failed to fetch OHLCV for {symbol} {tf}: {exc}")
-                continue
+            except Exception as exc:  # pragma: no cover - network guard
+                logger.error("Failed to fetch OHLCV for %s %s: %s", symbol, tf, exc)
+                return tf, None
 
             if not ohlcv or len(ohlcv) < max(self.config.swing_length * 4, 50):
-                continue
+                logger.debug("Skipping %s %s timeframe - insufficient candles", symbol, tf)
+                return tf, None
 
-            datasets[tf] = self._to_dataframe(ohlcv)
+            return tf, self._to_dataframe(ohlcv)
+
+        worker_count = self._timeframe_worker_count()
+        if worker_count == 1:
+            for tf in timeframes:
+                tf_name, df = fetch_timeframe(tf)
+                if df is not None:
+                    datasets[tf_name] = df
+            return datasets
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {executor.submit(fetch_timeframe, tf): tf for tf in timeframes}
+            for future in as_completed(future_map):
+                try:
+                    tf_name, df = future.result()
+                except Exception as exc:  # pragma: no cover - defensive
+                    tf_label = future_map.get(future, "?")
+                    logger.error("Timeframe download task failed for %s %s: %s", symbol, tf_label, exc)
+                    continue
+
+                if df is not None:
+                    datasets[tf_name] = df
 
         return datasets
 
@@ -238,12 +270,24 @@ class OrderBlockBreakoutStrategy:
         candles = math.ceil(total_minutes / tf_minutes)
         return min(max(candles, self.config.swing_length * 5), MAX_CANDLES_PER_REQUEST)
 
-    @staticmethod
-    def _optimal_workers(symbol_count: int) -> int:
+    def _determine_symbol_workers(self, symbol_count: int, override: Optional[int]) -> int:
         if symbol_count <= 1:
             return 1
-        cpu_count = max(1, os.cpu_count() or 4)
-        return min(max(4, cpu_count * 2), symbol_count)
+
+        limit = override if override and override > 0 else self.config.max_workers
+        if limit <= 0:
+            cpu_count = max(1, os.cpu_count() or 4)
+            limit = max(4, cpu_count * 2)
+
+        return min(limit, symbol_count)
+
+    def _timeframe_worker_count(self) -> int:
+        tf_count = len(self.config.timeframes)
+        if tf_count <= 1:
+            return tf_count or 1
+
+        limit = max(1, min(self.config.max_workers, TIMEFRAME_WORKER_CAP))
+        return min(limit, tf_count)
 
     # ------------------------------------------------------------------ #
     # Trend and structure evaluation

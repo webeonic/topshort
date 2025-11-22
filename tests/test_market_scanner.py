@@ -1,7 +1,7 @@
 """Unit tests for the MarketScanner helper logic."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -87,7 +87,7 @@ def test_scan_order_block_uses_universe_when_symbols_missing():
     scanner.scan(strategy_mode="order_block")
 
     scanner.get_order_block_universe.assert_called_once()
-    order_block_strategy.scan.assert_called_once_with(symbols=["BTCUSDT"], top_n=30, progress_callback=None)
+    order_block_strategy.scan.assert_called_once_with(symbols=["BTCUSDT"], top_n=30, progress_callback=None, max_workers=ANY)
 
 
 def test_quick_check_delegates_to_detector():
