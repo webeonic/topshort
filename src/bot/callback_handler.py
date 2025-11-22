@@ -100,7 +100,11 @@ class CallbackHandler:
             self._scan_queue,
             self._concurrency_config,
         )
-        return commands
+        self._commands_instance = commands
+        # Ensure queue reference stays in sync for future lazy initializations
+        if not self._scan_queue:
+            self._scan_queue = getattr(commands, "scan_queue", None)
+        return self._commands_instance
 
     def _register_default_handlers(self):
         """Register default callback handlers."""

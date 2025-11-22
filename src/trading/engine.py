@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import uuid
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,8 @@ from .position_manager import PositionManager
 from .risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
+
+_YIELD_TIMEOUT_SECONDS = 0.1
 
 
 class TradingEngine:
@@ -92,7 +95,10 @@ class TradingEngine:
 
         def _yield():
             try:
-                asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+                future = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+                future.result(timeout=_YIELD_TIMEOUT_SECONDS)
+            except FuturesTimeoutError:
+                logger.debug("Yield callback timed out after %.2fs", _YIELD_TIMEOUT_SECONDS)
             except Exception as exc:
                 logger.debug(f"Yield callback failed: {exc}")
 
