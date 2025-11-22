@@ -71,6 +71,8 @@ class OrderBlockStrategyConfig:
     risk_per_trade_pct: float
     max_signals: int
     max_workers: int
+    chunk_size: int
+    chunk_pause_ms: int
     timeframes: List[str] = field(default_factory=list)
     entry_timeframe: str = "15m"
     confirmation_timeframe: str = "5m"
@@ -142,6 +144,16 @@ class SchedulerConfig:
 
 
 @dataclass
+class ConcurrencyConfig:
+    """Global concurrency controls."""
+
+    blocking_workers: int
+    scheduler_workers: int
+    scan_queue_per_strategy: int
+    scan_worker_delay_seconds: float
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration."""
 
@@ -162,6 +174,7 @@ class Config:
     pairs: PairsConfig
     order_block_strategy: OrderBlockStrategyConfig
     scheduler: SchedulerConfig
+    concurrency: ConcurrencyConfig
     logging: LoggingConfig
 
 
@@ -200,6 +213,12 @@ def load_config() -> Config:
             scan_interval_minutes=int(os.getenv("SCAN_INTERVAL_MINUTES", "60")),
             monitor_interval_seconds=int(os.getenv("MONITOR_INTERVAL_SECONDS", "30")),
         ),
+        concurrency=ConcurrencyConfig(
+            blocking_workers=int(os.getenv("ASYNC_BLOCKING_WORKERS", str(_default_blocking_workers()))),
+            scheduler_workers=int(os.getenv("SCHEDULER_MAX_WORKERS", "2")),
+            scan_queue_per_strategy=int(os.getenv("SCAN_QUEUE_PER_STRATEGY", "3")),
+            scan_worker_delay_seconds=float(os.getenv("SCAN_WORKER_DELAY_SECONDS", "0.25")),
+        ),
         logging=LoggingConfig(level=os.getenv("LOG_LEVEL", "INFO"), file=os.getenv("LOG_FILE", "./logs/topshort.log")),
         pairs=PairsConfig(
             top_n=int(os.getenv("TOP_PAIRS_COUNT", "50")),
@@ -226,6 +245,8 @@ def load_config() -> Config:
             risk_per_trade_pct=float(os.getenv("OB_RISK_PER_TRADE_PCT", "1.0")),
             max_signals=int(os.getenv("OB_MAX_SIGNALS", "10")),
             max_workers=int(os.getenv("OB_MAX_WORKERS", str(default_ob_workers))),
+            chunk_size=int(os.getenv("OB_CHUNK_SIZE", "10")),
+            chunk_pause_ms=int(os.getenv("OB_CHUNK_PAUSE_MS", "0")),
             timeframes=_parse_timeframes(os.getenv("OB_TIMEFRAMES", "1d,4h,1h,15m,5m")),
             entry_timeframe=os.getenv("OB_ENTRY_TIMEFRAME", "15m"),
             confirmation_timeframe=os.getenv("OB_CONFIRMATION_TIMEFRAME", "5m"),
@@ -305,6 +326,12 @@ def _default_order_block_workers() -> int:
     """Calculate default worker pool size for Order Block scans."""
     cpu_count = os.cpu_count() or 4
     return max(8, cpu_count * 2)
+
+
+def _default_blocking_workers() -> int:
+    """Default size for shared blocking executor."""
+    cpu_count = os.cpu_count() or 4
+    return max(4, cpu_count)
 
 
 # Global config instance

@@ -4,7 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import DeclarativeMeta, relationship, sessionmaker, validates
+from sqlalchemy.orm import DeclarativeMeta, relationship, scoped_session, sessionmaker, validates
 
 Base: DeclarativeMeta = declarative_base()
 
@@ -412,8 +412,8 @@ def create_database(database_url: str, auto_migrate: bool = True):
 
 def get_session(engine):
     """Get database session."""
-    Session = sessionmaker(bind=engine)
-    return Session()
+    SessionFactory = scoped_session(sessionmaker(bind=engine))
+    return SessionFactory
 
 
 def init_default_settings(session):

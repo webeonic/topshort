@@ -87,7 +87,12 @@ def test_scan_order_block_uses_universe_when_symbols_missing():
     scanner.scan(strategy_mode="order_block")
 
     scanner.get_order_block_universe.assert_called_once()
-    order_block_strategy.scan.assert_called_once_with(symbols=["BTCUSDT"], top_n=30, progress_callback=None, max_workers=ANY)
+    order_block_strategy.scan.assert_called_once()
+    _, kwargs = order_block_strategy.scan.call_args
+    assert kwargs["symbols"] == ["BTCUSDT"]
+    assert kwargs["top_n"] == 1
+    assert "progress_callback" in kwargs
+    assert "max_workers" in kwargs
 
 
 def test_quick_check_delegates_to_detector():

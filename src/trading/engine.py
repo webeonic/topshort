@@ -1,9 +1,12 @@
 """Trading engine - main trading logic coordinator."""
 
+import asyncio
 import json
 import logging
 import threading
+import time
 import uuid
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -20,6 +23,8 @@ from .risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
+_YIELD_TIMEOUT_SECONDS = 0.1
+
 
 class TradingEngine:
     """Main trading engine coordinating all components."""
@@ -28,6 +33,7 @@ class TradingEngine:
         self.session = session
         self.client = client
         self.config = config
+        self._async_loop: asyncio.AbstractEventLoop | None = None
 
         # Initialize components
         self.market_data = MarketData(client)
@@ -58,10 +64,18 @@ class TradingEngine:
         self._global_lock = threading.Lock()
         self._lock_timeout = 5.0  # seconds
         self._order_block_cycle_lock = threading.Lock()
+        self._order_block_cycle_started_at: float | None = None
+        self._order_block_cycle_last_duration: float = float(
+            max(1, config.strategy_runtime.order_block_cycle_interval_seconds)
+        )
 
     def get_default_leverage(self) -> int:
         """Get default leverage from settings."""
         return self.settings_repo.get_int("default_leverage", self.config.trading.default_leverage)
+
+    def attach_async_loop(self, loop: asyncio.AbstractEventLoop):
+        """Attach main event loop for cooperative yields."""
+        self._async_loop = loop
 
     def get_margin_per_trade(self) -> float:
         """Get margin per trade from settings."""
@@ -73,6 +87,29 @@ class TradingEngine:
             if symbol not in self._position_locks:
                 self._position_locks[symbol] = threading.Lock()
             return self._position_locks[symbol]
+
+    def _get_yield_callback(self):
+        loop = self._async_loop
+        if not loop:
+            return None
+
+        def _yield():
+            try:
+                future = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+                future.result(timeout=_YIELD_TIMEOUT_SECONDS)
+            except FuturesTimeoutError:
+                logger.debug("Yield callback timed out after %.2fs", _YIELD_TIMEOUT_SECONDS)
+            except Exception as exc:
+                logger.debug(f"Yield callback failed: {exc}")
+
+        return _yield
+
+    def _order_block_cycle_eta_seconds(self) -> int | None:
+        if self._order_block_cycle_started_at is None:
+            return None
+        elapsed = time.time() - self._order_block_cycle_started_at
+        remaining = max(0, int(self._order_block_cycle_last_duration - elapsed))
+        return remaining
 
     def execute_pump_scan_and_trade(
         self,
@@ -108,6 +145,7 @@ class TradingEngine:
 
         if not self._order_block_cycle_lock.acquire(blocking=False):
             logger.info("Order Block cycle already running, skipping this tick")
+            eta_seconds = self._order_block_cycle_eta_seconds()
             return {
                 "success": True,
                 "scan_id": scan_id,
@@ -115,9 +153,12 @@ class TradingEngine:
                 "positions_opened": 0,
                 "reason": "Order Block cycle already running",
                 "strategy_mode": "order_block",
+                "eta_seconds": eta_seconds,
             }
 
         try:
+            cycle_timer = time.perf_counter()
+            self._order_block_cycle_started_at = time.time()
             limit = self.config.strategy_runtime.order_block_top_pairs
             symbols = self.scanner.get_order_block_universe(limit=limit if limit > 0 else None)
 
@@ -139,6 +180,10 @@ class TradingEngine:
                 symbols_override=symbols,
             )
         finally:
+            if self._order_block_cycle_started_at is not None:
+                duration = max(0.1, time.perf_counter() - cycle_timer)
+                self._order_block_cycle_last_duration = duration
+                self._order_block_cycle_started_at = None
             self._order_block_cycle_lock.release()
 
     def execute_scan_and_trade(
@@ -258,6 +303,7 @@ class TradingEngine:
             symbols=scan_symbols,
             strategy_mode=strategy_mode,
             progress_callback=progress_callback,
+            yield_callback=self._get_yield_callback(),
         )
 
         if not signals:

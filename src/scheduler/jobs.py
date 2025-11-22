@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from ..bot.telegram_bot import TelegramBot
 from ..database.repository import BotStatusRepository, MarketSignalRepository
 from ..trading.engine import TradingEngine
+from ..utils.async_executor import run_blocking
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +28,30 @@ class SchedulerJobs:
         self.config = config
         self.bot_status_repo = BotStatusRepository(session)
         self.signal_repo = MarketSignalRepository(session)
-        self.scheduler = AsyncIOScheduler()
+        scheduler_workers = 2
+        if getattr(config, "concurrency", None):
+            scheduler_workers = max(1, config.concurrency.scheduler_workers)
+        self.scheduler = AsyncIOScheduler(executors={"default": {"type": "threadpool", "max_workers": scheduler_workers}})
+
+    async def _run_blocking(self, func, *args, **kwargs):
+        return await run_blocking(func, *args, **kwargs)
+
+    def _job_start(self, name: str) -> float:
+        logger.info("Starting job: %s", name)
+        return time.perf_counter()
+
+    def _job_end(self, name: str, started_at: float, warn_after: float | None = None):
+        duration = time.perf_counter() - started_at
+        logger.info("Job %s finished in %.2fs", name, duration)
+        if warn_after and duration > warn_after:
+            logger.warning("Job %s exceeded threshold %.2fs (took %.2fs)", name, warn_after, duration)
 
     async def scan_and_trade_job(self):
         """Scheduled job to scan market and open positions."""
+        start_time = self._job_start("scan_and_trade")
         try:
             # Check if bot is active and not paused
-            bot_status = self.bot_status_repo.get()
+            bot_status = await self._run_blocking(self.bot_status_repo.get)
             if not bot_status.is_active or bot_status.is_paused:
                 logger.info("Bot is paused or inactive, skipping scan")
                 return
@@ -41,10 +61,12 @@ class SchedulerJobs:
             logger.info("=" * 80)
 
             # Update last scan time
-            self.bot_status_repo.update_scan_time()
+            await self._run_blocking(self.bot_status_repo.update_scan_time)
 
             # Execute Pump & Cooldown scan
-            result = self.engine.execute_pump_scan_and_trade(max_signals=30, triggered_by="scheduler")
+            result = await self._run_blocking(
+                lambda: self.engine.execute_pump_scan_and_trade(max_signals=30, triggered_by="scheduler")
+            )
 
             # Send notification
             await self.telegram_bot.notify_scan_complete(result)
@@ -59,19 +81,23 @@ class SchedulerJobs:
         except Exception as e:
             logger.error(f"Error in scan_and_trade_job: {e}", exc_info=True)
             await self.telegram_bot.notify_error(f"Scan error: {str(e)}")
+        finally:
+            warn_after = self.config.scheduler.scan_interval_minutes * 60
+            self._job_end("scan_and_trade", start_time, warn_after=warn_after)
 
     async def order_block_cycle_job(self):
         """High-frequency Order Block scanner."""
         if not self.config.order_block_strategy.enabled:
             return
 
+        start_time = self._job_start("order_block_cycle")
         try:
-            bot_status = self.bot_status_repo.get()
+            bot_status = await self._run_blocking(self.bot_status_repo.get)
             if not bot_status.is_active or bot_status.is_paused:
                 logger.debug("Bot inactive/paused, skipping Order Block cycle")
                 return
 
-            result = self.engine.execute_order_block_cycle(triggered_by="scheduler")
+            result = await self._run_blocking(lambda: self.engine.execute_order_block_cycle(triggered_by="scheduler"))
             if (result.get("signals_found") or result.get("positions_opened")) and result.get(
                 "strategy_mode"
             ) == "order_block":
@@ -84,22 +110,26 @@ class SchedulerJobs:
         except Exception as e:
             logger.error(f"Error in order_block_cycle_job: {e}", exc_info=True)
             await self.telegram_bot.notify_error(f"Order Block scan error: {str(e)}")
+        finally:
+            warn_after = max(5, self.config.strategy_runtime.order_block_cycle_interval_seconds)
+            self._job_end("order_block_cycle", start_time, warn_after=warn_after)
 
     async def monitor_positions_job(self):
         """Scheduled job to monitor open positions."""
+        start_time = self._job_start("monitor_positions")
         try:
             # Check if bot is active
-            bot_status = self.bot_status_repo.get()
+            bot_status = await self._run_blocking(self.bot_status_repo.get)
             if not bot_status.is_active:
                 return
 
             logger.debug("Monitoring positions...")
 
             # Update last monitor time
-            self.bot_status_repo.update_monitor_time()
+            await self._run_blocking(self.bot_status_repo.update_monitor_time)
 
             # Monitor and close positions if targets reached
-            result = self.engine.monitor_and_close()
+            result = await self._run_blocking(self.engine.monitor_and_close)
 
             # Send notifications for closed positions
             if result.get("closed_positions"):
@@ -110,30 +140,37 @@ class SchedulerJobs:
 
         except Exception as e:
             logger.error(f"Error in monitor_positions_job: {e}", exc_info=True)
+        finally:
+            warn_after = max(10, self.config.scheduler.monitor_interval_seconds)
+            self._job_end("monitor_positions", start_time, warn_after=warn_after)
 
     async def cleanup_data_job(self):
         """Scheduled job to cleanup old data."""
+        start_time = self._job_start("cleanup_data")
         try:
             logger.info("Running data cleanup job...")
 
             # Cleanup old market signals (older than 30 days)
-            deleted_signals = self.signal_repo.cleanup_old_signals(retention_days=30)
+            deleted_signals = await self._run_blocking(lambda: self.signal_repo.cleanup_old_signals(retention_days=30))
 
             logger.info(f"Data cleanup completed: {deleted_signals} old signals removed")
 
         except Exception as e:
             logger.error(f"Error in cleanup_data_job: {e}", exc_info=True)
+        finally:
+            self._job_end("cleanup_data", start_time, warn_after=60)
 
     async def refresh_top_pairs_job(self):
         """Refresh cached list of top trading pairs."""
+        start_time = self._job_start("refresh_top_pairs")
         try:
             if not getattr(self.engine, "top_pairs_service", None):
                 logger.warning("Top pairs service is not initialized, skipping refresh")
                 return
 
             logger.info("Refreshing top pairs cache via scheduled job...")
-            await asyncio.to_thread(self.engine.top_pairs_service.refresh)
-            meta = self.engine.top_pairs_service.get_metadata()
+            await self._run_blocking(self.engine.top_pairs_service.refresh)
+            meta = await self._run_blocking(self.engine.top_pairs_service.get_metadata)
             logger.info(
                 "Top pairs cache refreshed: %s pairs (source=%s, updated=%s)",
                 meta.get("count"),
@@ -142,6 +179,8 @@ class SchedulerJobs:
             )
         except Exception as e:
             logger.error(f"Error refreshing top pairs cache: {e}", exc_info=True)
+        finally:
+            self._job_end("refresh_top_pairs", start_time, warn_after=120)
 
     def start(self):
         """Start scheduler with configured jobs."""

@@ -4,12 +4,14 @@ import asyncio
 import logging
 import os
 import uuid
+from contextlib import suppress
 from functools import wraps
 from typing import Dict, TypedDict
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from ..config import ConcurrencyConfig
 from ..database.repository import (
     BotStatusRepository,
     MarketSignalRepository,
@@ -18,7 +20,9 @@ from ..database.repository import (
     TradeHistoryRepository,
 )
 from ..trading.engine import TradingEngine
+from ..utils.async_executor import run_blocking
 from .keyboard_builder import KeyboardBuilder, KeyboardTemplates
+from .scan_queue import ScanQueueFullError, ScanQueueItem, ScanQueueManager
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +111,13 @@ def require_auth(func):
 class BotCommands:
     """Telegram bot command handlers."""
 
-    def __init__(self, session, engine: TradingEngine):
+    def __init__(
+        self,
+        session,
+        engine: TradingEngine,
+        scan_queue: ScanQueueManager | None = None,
+        concurrency_config: ConcurrencyConfig | None = None,
+    ):
         self.session = session
         self.engine = engine
         self.settings_repo = SettingsRepository(session)
@@ -116,6 +126,24 @@ class BotCommands:
         self.signal_repo = MarketSignalRepository(session)
         self.scan_progress_repo = ScanProgressRepository(session)
         self.keyboard_builder = KeyboardBuilder(session)
+        self.scan_queue = scan_queue
+        self.concurrency_config = concurrency_config
+
+    async def _run_blocking(self, func, *args, **kwargs):
+        """Execute blocking callable in thread pool."""
+        return await run_blocking(func, *args, **kwargs)
+
+    def _resolve_strategy_mode(self, context: ContextTypes.DEFAULT_TYPE) -> str:
+        allowed_modes = {"pump_cooldown", "order_block"}
+        default_mode = self.engine.config.strategy_runtime.default_manual_strategy
+        strategy_mode = default_mode if default_mode in allowed_modes else "pump_cooldown"
+        if context.args:
+            strategy_arg = context.args[0].lower()
+            if strategy_arg in {"ob", "orderblock", "order_block", "smc"}:
+                strategy_mode = "order_block"
+            elif strategy_arg in {"pump", "cooldown", "pc"}:
+                strategy_mode = "pump_cooldown"
+        return strategy_mode
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
@@ -155,8 +183,8 @@ The bot automatically scans the market every hour and opens short positions on c
         """Handle /status command."""
         try:
             # Get bot status
-            bot_status = self.bot_status_repo.get()
-            trading_status = self.engine.get_status()
+            bot_status = await self._run_blocking(self.bot_status_repo.get)
+            trading_status = await self._run_blocking(self.engine.get_status)
             risk = trading_status["risk_summary"]
 
             status_emoji = "🟢" if bot_status.is_active and not bot_status.is_paused else "🔴"
@@ -186,7 +214,7 @@ The bot automatically scans the market every hour and opens short positions on c
     async def positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /positions command."""
         try:
-            positions = self.engine.position_manager.get_all_open_positions()
+            positions = await self._run_blocking(self.engine.position_manager.get_all_open_positions)
 
             if not positions:
                 await update.effective_message.reply_text("📭 No open positions")
@@ -218,7 +246,7 @@ The bot automatically scans the market every hour and opens short positions on c
     async def history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /history command."""
         try:
-            history = self.history_repo.get_recent(limit=10)
+            history = await self._run_blocking(lambda: self.history_repo.get_recent(limit=10))
 
             if not history:
                 await update.effective_message.reply_text("📭 Trade history is empty")
@@ -247,7 +275,7 @@ The bot automatically scans the market every hour and opens short positions on c
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command."""
         try:
-            stats = self.history_repo.get_statistics()
+            stats = await self._run_blocking(self.history_repo.get_statistics)
 
             if stats["total_trades"] == 0:
                 await update.effective_message.reply_text("📭 No statistics yet")
@@ -282,11 +310,11 @@ The bot automatically scans the market every hour and opens short positions on c
 
             force_refresh = bool(context.args and context.args[0].lower() in {"refresh", "update"})
             if force_refresh:
-                pairs = await asyncio.to_thread(self.engine.top_pairs_service.refresh)
+                pairs = await self._run_blocking(self.engine.top_pairs_service.refresh)
             else:
-                pairs = self.engine.top_pairs_service.get_pairs()
+                pairs = await self._run_blocking(self.engine.top_pairs_service.get_pairs)
 
-            meta = self.engine.top_pairs_service.get_metadata()
+            meta = await self._run_blocking(self.engine.top_pairs_service.get_metadata)
             if not pairs:
                 await update.effective_message.reply_text("📭 No pairs available yet, please try again later.")
                 return
@@ -318,7 +346,7 @@ The bot automatically scans the market every hour and opens short positions on c
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /settings command."""
         try:
-            all_settings = self.settings_repo.get_all()
+            all_settings = await self._run_blocking(self.settings_repo.get_all)
 
             message = "⚙️ *Current settings:*\n\n"
 
@@ -376,7 +404,7 @@ The bot automatically scans the market every hour and opens short positions on c
                     return
 
                 # Save validated setting
-                self.settings_repo.set(key, str(typed_value), setting_config["description"])
+                await self._run_blocking(self.settings_repo.set, key, str(typed_value), setting_config["description"])
 
                 await update.effective_message.reply_text(
                     f"✅ Setting updated successfully\n\n" f"*{key}* = {typed_value}\n" f"_{setting_config['description']}_",
@@ -402,7 +430,7 @@ The bot automatically scans the market every hour and opens short positions on c
     async def pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pause command."""
         try:
-            self.bot_status_repo.set_paused(True)
+            await self._run_blocking(self.bot_status_repo.set_paused, True)
             await update.effective_message.reply_text("⏸️ Trading paused")
 
         except Exception as e:
@@ -413,7 +441,7 @@ The bot automatically scans the market every hour and opens short positions on c
     async def resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /resume command."""
         try:
-            self.bot_status_repo.set_paused(False)
+            await self._run_blocking(self.bot_status_repo.set_paused, False)
             await update.effective_message.reply_text("▶️ Trading resumed")
 
         except Exception as e:
@@ -434,168 +462,278 @@ The bot automatically scans the market every hour and opens short positions on c
         bar = "█" * filled + "░" * empty
         return f"[{bar}] {progress_pct:.1f}%"
 
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def _format_processed_line(self, processed: int, total: int, strategy_mode: str) -> str:
         """Format processed symbols line with optional approximation marker."""
         total_display = f"~{total}" if strategy_mode != "order_block" else str(total)
         return f"Processed: {processed}/{total_display} symbols"
 
-    @require_auth
-    async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /scan command with real-time progress updates."""
+    def _strategy_label(self, strategy_mode: str) -> str:
+        return "Order Block Breakout" if strategy_mode == "order_block" else "Pump & Cooldown"
+
+    async def _estimate_total_symbols(self, strategy_mode: str) -> int:
         try:
-            allowed_modes = {"pump_cooldown", "order_block"}
-            default_mode = self.engine.config.strategy_runtime.default_manual_strategy
-            strategy_mode = default_mode if default_mode in allowed_modes else "pump_cooldown"
-            if context.args:
-                strategy_arg = context.args[0].lower()
-                if strategy_arg in {"ob", "orderblock", "order_block", "smc"}:
-                    strategy_mode = "order_block"
-                elif strategy_arg in {"pump", "cooldown", "pc"}:
-                    strategy_mode = "pump_cooldown"
-
-            # Generate unique scan ID
-            scan_id = f"scan_{uuid.uuid4().hex[:12]}"
-            user_id = str(update.effective_user.id)
-
-            # Initialize scan progress in database
-            # First get total symbols count (rough estimate for initial creation)
             if strategy_mode == "order_block":
                 limit_value = max(self.engine.config.strategy_runtime.order_block_top_pairs or 0, 0)
                 universe_limit = limit_value if limit_value > 0 else None
-                universe = self.engine.scanner.get_order_block_universe(universe_limit)
-                total_symbols = len(universe)
-                if total_symbols == 0 and limit_value > 0:
-                    total_symbols = limit_value
-            else:
-                total_symbols = 200  # Rough estimate for pump cooldown
+                symbols = await self._run_blocking(lambda: self.engine.scanner.get_order_block_universe(universe_limit))
+                if not symbols and limit_value > 0:
+                    return limit_value
+                return len(symbols)
+        except Exception as exc:
+            logger.error(f"Failed to estimate universe for {strategy_mode}: {exc}")
+        return 200
 
-            self.scan_progress_repo.create(
-                scan_id=scan_id, scan_type="manual", total_symbols=total_symbols, triggered_by=user_id
+    async def _progress_monitor(
+        self,
+        scan_id: str,
+        strategy_mode: str,
+        message,
+        stop_event: asyncio.Event,
+    ):
+        last_update_time = 0.0
+        last_message_text = ""
+        loop = asyncio.get_running_loop()
+
+        while not stop_event.is_set():
+            try:
+                progress = await self._run_blocking(self.scan_progress_repo.get, scan_id)
+            except Exception as exc:
+                logger.error(f"Error fetching scan progress: {exc}")
+                await asyncio.sleep(1)
+                continue
+
+            if not progress:
+                await asyncio.sleep(0.5)
+                continue
+
+            current_time = loop.time()
+            if current_time - last_update_time >= 1.0:
+                progress_pct = self._safe_float(getattr(progress, "progress_pct", 0.0))
+                progress_pct = max(0.0, min(progress_pct, 100.0))
+                processed_symbols = self._safe_int(getattr(progress, "processed_symbols", 0))
+                total_symbols = self._safe_int(getattr(progress, "total_symbols", 0))
+                signals_found = self._safe_int(getattr(progress, "signals_found", 0))
+                status = getattr(progress, "status", "running") or "running"
+
+                progress_bar = self._format_progress_bar(progress_pct)
+                status_emoji = "🔍" if status == "running" else "✅"
+                processed_line = self._format_processed_line(processed_symbols, total_symbols, strategy_mode)
+                message_text = (
+                    f"{status_emoji} *Market scan in progress...*\n\n"
+                    f"{progress_bar}\n"
+                    f"{processed_line}\n"
+                    f"Signals found: {signals_found}"
+                )
+
+                if message_text != last_message_text:
+                    try:
+                        await message.edit_text(message_text, parse_mode="Markdown")
+                        last_message_text = message_text
+                        last_update_time = current_time
+                    except Exception as exc:
+                        error_msg = str(exc).lower()
+                        if "message is not modified" not in error_msg:
+                            logger.debug(f"Progress message update skipped: {exc}")
+
+            await asyncio.sleep(0.5)
+
+    async def _cleanup_task(self, task: asyncio.Task):
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except asyncio.TimeoutError:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _execute_scan_cycle(self, strategy_mode: str, scan_id: str, user_id: str) -> dict:
+        def executor_fn():
+            if strategy_mode == "order_block":
+                return self.engine.execute_order_block_cycle(
+                    max_signals=30,
+                    scan_id=scan_id,
+                    triggered_by=user_id,
+                )
+            return self.engine.execute_pump_scan_and_trade(
+                max_signals=30,
+                scan_id=scan_id,
+                triggered_by=user_id,
             )
 
-            # Send initial message
-            strategy_label = "Order Block Breakout" if strategy_mode == "order_block" else "Pump & Cooldown"
-            processed_line = self._format_processed_line(0, total_symbols, strategy_mode)
+        return await self._run_blocking(executor_fn)
 
-            initial_message = await update.effective_message.reply_text(
-                "🔍 *Starting market scan...*\n\n"
-                f"Strategy: *{strategy_label}*\n"
-                f"{self._format_progress_bar(0)}\n"
-                f"{processed_line}\n"
-                "Signals found: 0",
+    async def _run_scan_request(
+        self,
+        *,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        strategy_mode: str,
+        scan_id: str,
+        user_id: str,
+        initial_message,
+    ):
+        strategy_label = self._strategy_label(strategy_mode)
+        stop_event: asyncio.Event | None = None
+        progress_task: asyncio.Task | None = None
+        result: dict | None = None
+
+        try:
+            await initial_message.edit_text(
+                "🔄 *Запуск сканирования...*\n\n" f"Стратегия: *{strategy_label}*",
                 parse_mode="Markdown",
             )
 
-            # Track whether scan is complete
-            scan_complete = False
-            last_update_time = asyncio.get_event_loop().time()
-            last_message_text = ""  # Cache last message to avoid unnecessary updates
-
-            async def update_progress_message():
-                """Periodically update the progress message."""
-                nonlocal last_update_time, last_message_text
-                while not scan_complete:
-                    try:
-                        # Get current progress from database
-                        progress = self.scan_progress_repo.get(scan_id)
-                        if not progress:
-                            await asyncio.sleep(0.5)
-                            continue
-
-                        current_time = asyncio.get_event_loop().time()
-
-                        # Update message every 1 second to avoid rate limits
-                        if current_time - last_update_time >= 1.0:
-                            progress_bar = self._format_progress_bar(progress.progress_pct)
-
-                            status_emoji = "🔍" if progress.status == "running" else "✅"
-                            processed_line = self._format_processed_line(
-                                progress.processed_symbols, progress.total_symbols, strategy_mode
-                            )
-                            message = (
-                                f"{status_emoji} *Market scan in progress...*\n\n"
-                                f"{progress_bar}\n"
-                                f"{processed_line}\n"
-                                f"Signals found: {progress.signals_found}"
-                            )
-
-                            # Only update if message text actually changed
-                            if message != last_message_text:
-                                try:
-                                    await initial_message.edit_text(message, parse_mode="Markdown")
-                                    last_message_text = message
-                                    last_update_time = current_time
-                                except Exception as e:
-                                    # Ignore all Telegram API errors related to message editing
-                                    error_msg = str(e).lower()
-                                    if "message is not modified" in error_msg or "bad request" in error_msg:
-                                        # These are expected errors, just cache the message
-                                        last_message_text = message
-                                    else:
-                                        logger.debug(f"Minor error updating progress message: {e}")
-
-                        await asyncio.sleep(0.5)
-                    except asyncio.CancelledError:
-                        # Gracefully exit when task is cancelled
-                        break
-                    except Exception as e:
-                        logger.error(f"Error in progress update loop: {e}")
-                        await asyncio.sleep(1)
-
-            # Start progress update task
-            progress_task = asyncio.create_task(update_progress_message())
-
-            # Execute scan in thread pool (blocking operation)
-            loop = asyncio.get_event_loop()
-            if strategy_mode == "order_block":
-
-                def executor_fn():
-                    return self.engine.execute_order_block_cycle(max_signals=30, scan_id=scan_id, triggered_by=user_id)
-
-            else:
-
-                def executor_fn():
-                    return self.engine.execute_pump_scan_and_trade(max_signals=30, scan_id=scan_id, triggered_by=user_id)
-
-            result = await loop.run_in_executor(None, executor_fn)
-
-            # Mark scan as complete
-            scan_complete = True
-
-            # Wait for progress task to finish
-            try:
-                await asyncio.wait_for(progress_task, timeout=2.0)
-            except asyncio.TimeoutError:
-                progress_task.cancel()
-                try:
-                    await progress_task
-                except asyncio.CancelledError:
-                    pass
-
-            # Send final summary message
-            final_strategy_label = (
-                "Order Block Breakout" if result.get("strategy_mode") == "order_block" else "Pump & Cooldown"
+            total_symbols = await self._estimate_total_symbols(strategy_mode)
+            await self._run_blocking(
+                self.scan_progress_repo.create,
+                scan_id=scan_id,
+                scan_type="manual",
+                total_symbols=total_symbols,
+                triggered_by=user_id,
             )
-            message = f"""
-✅ *Scan completed*
 
-📊 Signals found: {result['signals_found']}
-✅ Positions opened: {result['positions_opened']}
-🎯 Strategy: {final_strategy_label}
-"""
-            # Add signal symbols if signals were found
-            if result.get("signals_found", 0) > 0 and result.get("signals"):
-                message += "\n📈 Signal pairs:\n"
-                for signal in result["signals"]:
-                    message += f"  • {signal['symbol']}\n"
+            stop_event = asyncio.Event()
+            progress_task = asyncio.create_task(self._progress_monitor(scan_id, strategy_mode, initial_message, stop_event))
 
-            # Update the message with final results
+            result = await self._execute_scan_cycle(strategy_mode, scan_id, user_id)
+        except Exception as exc:
+            logger.error(f"Error executing manual scan: {exc}", exc_info=True)
+            await self._handle_scan_failure(update, initial_message, exc)
+            return
+        finally:
+            if stop_event:
+                stop_event.set()
+            if progress_task:
+                await self._cleanup_task(progress_task)
+
+        if strategy_mode == "order_block" and result and result.get("reason") == "Order Block cycle already running":
+            await self._notify_order_block_cycle_busy(update, initial_message, result)
+            return
+        await self._publish_scan_result(update, initial_message, result)
+
+    async def _handle_scan_failure(self, update: Update, message, exc: Exception):
+        error_text = f"❌ Ошибка сканирования:\n{exc}"
+        try:
+            await message.edit_text(error_text, parse_mode="Markdown")
+        except Exception as edit_exc:
+            logger.debug("Failed to edit scan error message: %s", edit_exc)
             try:
-                await initial_message.edit_text(message, parse_mode="Markdown")
-            except Exception:
-                # If edit fails, send a new message
-                await update.effective_message.reply_text(message, parse_mode="Markdown")
+                await update.effective_message.reply_text(error_text, parse_mode="Markdown")
+            except Exception as notify_exc:
+                logger.error("Failed to notify user about scan error: %s", notify_exc)
 
+    async def _notify_order_block_cycle_busy(self, update: Update, message, result: dict):
+        eta_seconds = result.get("eta_seconds")
+        if eta_seconds is None:
+            remaining_text = "Цикл уже выполняется, дождитесь завершения текущей итерации."
+        else:
+            minutes = max(1, round(eta_seconds / 60))
+            remaining_text = f"Цикл уже выполняется, осталось примерно {minutes} мин."
+
+        busy_message = (
+            "⏳ *Order Block цикл уже в работе*\n\n"
+            f"{remaining_text}\n"
+            "Новый запрос будет запущен автоматически после завершения."
+        )
+        try:
+            await message.edit_text(busy_message, parse_mode="Markdown")
+        except Exception:
+            await update.effective_message.reply_text(busy_message, parse_mode="Markdown")
+
+    async def _publish_scan_result(self, update: Update, message, result: dict | None):
+        result = result or {}
+        final_strategy_label = self._strategy_label(result.get("strategy_mode", "pump_cooldown"))
+        summary = (
+            "✅ *Scan completed*\n\n"
+            f"📊 Signals found: {result.get('signals_found', 0)}\n"
+            f"✅ Positions opened: {result.get('positions_opened', 0)}\n"
+            f"🎯 Strategy: {final_strategy_label}\n"
+        )
+
+        if result.get("signals_found", 0) > 0 and result.get("signals"):
+            summary += "\n📈 Signal pairs:\n"
+            for signal in result["signals"]:
+                summary += f"  • {signal['symbol']}\n"
+
+        try:
+            await message.edit_text(summary, parse_mode="Markdown")
+        except Exception:
+            await update.effective_message.reply_text(summary, parse_mode="Markdown")
+
+    @require_auth
+    async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /scan command with queued execution and background worker."""
+        initial_message = None
+        try:
+            strategy_mode = self._resolve_strategy_mode(context)
+
+            scan_id = f"scan_{uuid.uuid4().hex[:12]}"
+            user_id = str(update.effective_user.id)
+            logger.debug("Manual scan request: strategy=%s queue_enabled=%s", strategy_mode, bool(self.scan_queue))
+
+            initial_message = await update.effective_message.reply_text(
+                "⏳ *Запрос принят*\n\nПодготавливаем запуск сканирования...",
+                parse_mode="Markdown",
+            )
+
+            if not self.scan_queue:
+                await self._run_scan_request(
+                    update=update,
+                    context=context,
+                    strategy_mode=strategy_mode,
+                    scan_id=scan_id,
+                    user_id=user_id,
+                    initial_message=initial_message,
+                )
+                return
+
+            async def handler():
+                await self._run_scan_request(
+                    update=update,
+                    context=context,
+                    strategy_mode=strategy_mode,
+                    scan_id=scan_id,
+                    user_id=user_id,
+                    initial_message=initial_message,
+                )
+
+            queue_item = ScanQueueItem(scan_id=scan_id, strategy_mode=strategy_mode, handler=handler)
+            position = await self.scan_queue.submit(queue_item)
+
+            if position > 0:
+                await initial_message.edit_text(
+                    "⌛️ *Запрос добавлен в очередь*\n\n"
+                    f"Текущая позиция: #{position + 1}\n"
+                    "Мы сообщим о прогрессе, как только сканирование начнётся.",
+                    parse_mode="Markdown",
+                )
+            else:
+                await initial_message.edit_text(
+                    "⚙️ *Готовим запуск сканирования...*\n\n" "Бот стартует анализ в ближайшие секунды.",
+                    parse_mode="Markdown",
+                )
+
+        except ScanQueueFullError:
+            if initial_message:
+                await initial_message.edit_text(
+                    "❌ Очередь сканов переполнена, попробуйте позже.",
+                    parse_mode="Markdown",
+                )
+            else:
+                await update.effective_message.reply_text("❌ Очередь сканов переполнена, попробуйте позже.")
         except Exception as e:
             logger.error(f"Error in scan command: {e}", exc_info=True)
             await update.effective_message.reply_text(f"❌ Error: {e}")
@@ -609,7 +747,7 @@ The bot automatically scans the market every hour and opens short positions on c
                 return
 
             symbol = context.args[0]
-            result = self.engine.position_manager.close_position_by_symbol(symbol, "manual")
+            result = await self._run_blocking(self.engine.position_manager.close_position_by_symbol, symbol, "manual")
 
             if result:
                 pnl_emoji = "🟢" if result["pnl"] > 0 else "🔴"
@@ -640,7 +778,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
             await update.effective_message.reply_text("🔄 Closing all positions...")
 
-            result = self.engine.close_all_positions("manual")
+            result = await self._run_blocking(self.engine.close_all_positions, "manual")
 
             message = f"""
 ✅ Closing completed
