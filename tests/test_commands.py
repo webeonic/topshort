@@ -447,6 +447,14 @@ class TestScanCommand:
         # Verify final message was edited
         assert mock_message.edit_text.called
 
+    def test_format_processed_line_pump_mode(self, bot_commands):
+        """Pump & Cooldown mode uses approximate totals."""
+        assert bot_commands._format_processed_line(5, 200, "pump_cooldown") == "Processed: 5/~200 symbols"
+
+    def test_format_processed_line_order_block_mode(self, bot_commands):
+        """Order Block mode uses exact totals."""
+        assert bot_commands._format_processed_line(3, 50, "order_block") == "Processed: 3/50 symbols"
+
     @pytest.mark.asyncio
     @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
     async def test_scan_order_block_mode(self, bot_commands, mock_update, mock_context):

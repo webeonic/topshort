@@ -434,6 +434,11 @@ The bot automatically scans the market every hour and opens short positions on c
         bar = "█" * filled + "░" * empty
         return f"[{bar}] {progress_pct:.1f}%"
 
+    def _format_processed_line(self, processed: int, total: int, strategy_mode: str) -> str:
+        """Format processed symbols line with optional approximation marker."""
+        total_display = f"~{total}" if strategy_mode != "order_block" else str(total)
+        return f"Processed: {processed}/{total_display} symbols"
+
     @require_auth
     async def scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /scan command with real-time progress updates."""
@@ -470,11 +475,7 @@ The bot automatically scans the market every hour and opens short positions on c
 
             # Send initial message
             strategy_label = "Order Block Breakout" if strategy_mode == "order_block" else "Pump & Cooldown"
-            processed_line = (
-                f"Processed: 0/{total_symbols} symbols"
-                if strategy_mode == "order_block"
-                else f"Processed: 0/~{total_symbols} symbols"
-            )
+            processed_line = self._format_processed_line(0, total_symbols, strategy_mode)
 
             initial_message = await update.effective_message.reply_text(
                 "🔍 *Starting market scan...*\n\n"
@@ -508,10 +509,13 @@ The bot automatically scans the market every hour and opens short positions on c
                             progress_bar = self._format_progress_bar(progress.progress_pct)
 
                             status_emoji = "🔍" if progress.status == "running" else "✅"
+                            processed_line = self._format_processed_line(
+                                progress.processed_symbols, progress.total_symbols, strategy_mode
+                            )
                             message = (
                                 f"{status_emoji} *Market scan in progress...*\n\n"
                                 f"{progress_bar}\n"
-                                f"Processed: {progress.processed_symbols}/{progress.total_symbols} symbols\n"
+                                f"{processed_line}\n"
                                 f"Signals found: {progress.signals_found}"
                             )
 
