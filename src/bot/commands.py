@@ -462,6 +462,20 @@ The bot automatically scans the market every hour and opens short positions on c
         bar = "█" * filled + "░" * empty
         return f"[{bar}] {progress_pct:.1f}%"
 
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def _format_processed_line(self, processed: int, total: int, strategy_mode: str) -> str:
         """Format processed symbols line with optional approximation marker."""
         total_display = f"~{total}" if strategy_mode != "order_block" else str(total)
@@ -508,14 +522,21 @@ The bot automatically scans the market every hour and opens short positions on c
 
             current_time = loop.time()
             if current_time - last_update_time >= 1.0:
-                progress_bar = self._format_progress_bar(progress.progress_pct)
-                status_emoji = "🔍" if progress.status == "running" else "✅"
-                processed_line = self._format_processed_line(progress.processed_symbols, progress.total_symbols, strategy_mode)
+                progress_pct = self._safe_float(getattr(progress, "progress_pct", 0.0))
+                progress_pct = max(0.0, min(progress_pct, 100.0))
+                processed_symbols = self._safe_int(getattr(progress, "processed_symbols", 0))
+                total_symbols = self._safe_int(getattr(progress, "total_symbols", 0))
+                signals_found = self._safe_int(getattr(progress, "signals_found", 0))
+                status = getattr(progress, "status", "running") or "running"
+
+                progress_bar = self._format_progress_bar(progress_pct)
+                status_emoji = "🔍" if status == "running" else "✅"
+                processed_line = self._format_processed_line(processed_symbols, total_symbols, strategy_mode)
                 message_text = (
                     f"{status_emoji} *Market scan in progress...*\n\n"
                     f"{progress_bar}\n"
                     f"{processed_line}\n"
-                    f"Signals found: {progress.signals_found}"
+                    f"Signals found: {signals_found}"
                 )
 
                 if message_text != last_message_text:
@@ -584,11 +605,8 @@ The bot automatically scans the market every hour and opens short positions on c
                 triggered_by=user_id,
             )
 
-            if self.scan_queue:
-                stop_event = asyncio.Event()
-                progress_task = asyncio.create_task(
-                    self._progress_monitor(scan_id, strategy_mode, initial_message, stop_event)
-                )
+            stop_event = asyncio.Event()
+            progress_task = asyncio.create_task(self._progress_monitor(scan_id, strategy_mode, initial_message, stop_event))
 
             result = await self._execute_scan_cycle(strategy_mode, scan_id, user_id)
         except Exception as exc:

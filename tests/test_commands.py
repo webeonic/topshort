@@ -535,6 +535,32 @@ class TestScanCommand:
 
         mock_update.effective_message.reply_text.assert_awaited()
 
+    @pytest.mark.asyncio
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
+    async def test_run_scan_request_starts_progress_monitor_without_queue(self, bot_commands, mock_update, mock_context):
+        """Progress monitor should run even without scan queue."""
+
+        async def immediate(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        bot_commands.scan_queue = None
+        bot_commands._run_blocking = immediate
+        bot_commands._progress_monitor = AsyncMock()
+
+        initial_message = AsyncMock()
+        initial_message.edit_text = AsyncMock()
+
+        await bot_commands._run_scan_request(
+            update=mock_update,
+            context=mock_context,
+            strategy_mode="pump_cooldown",
+            scan_id="scan_123",
+            user_id="user",
+            initial_message=initial_message,
+        )
+
+        bot_commands._progress_monitor.assert_awaited_once()
+
 
 class TestCloseCommand:
     """Test /close command."""

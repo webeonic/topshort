@@ -66,11 +66,16 @@ class ScanQueueManager:
                 queue.task_done()
 
             if queue.empty():
-                logger.info("Scan queue worker for %s completed", strategy_mode)
+                should_stop = False
                 async with self._queue_lock:
-                    self._workers.pop(strategy_mode, None)
-                    self._queues.pop(strategy_mode, None)
-                break
+                    current_queue = self._queues.get(strategy_mode)
+                    if current_queue is queue and queue.empty():
+                        logger.info("Scan queue worker for %s completed", strategy_mode)
+                        self._workers.pop(strategy_mode, None)
+                        self._queues.pop(strategy_mode, None)
+                        should_stop = True
+                if should_stop:
+                    break
 
             await asyncio.sleep(self._worker_delay_seconds)
 
