@@ -407,6 +407,7 @@ class TradingEngine:
                         "rr_ratio": signal.get("rr_ratio"),
                     }
 
+                reference_entry_price = signal.get("entry_price") or signal.get("current_price")
                 position_info = self.position_manager.open_position(
                     symbol,
                     margin_per_trade,
@@ -415,6 +416,7 @@ class TradingEngine:
                     take_profit_price=tp_price,
                     stop_loss_price=sl_price,
                     metadata=metadata,
+                    reference_entry_price=reference_entry_price,
                 )
 
                 if position_info:

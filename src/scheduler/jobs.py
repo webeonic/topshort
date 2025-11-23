@@ -28,10 +28,7 @@ class SchedulerJobs:
         self.config = config
         self.bot_status_repo = BotStatusRepository(session)
         self.signal_repo = MarketSignalRepository(session)
-        scheduler_workers = 2
-        if getattr(config, "concurrency", None):
-            scheduler_workers = max(1, config.concurrency.scheduler_workers)
-        self.scheduler = AsyncIOScheduler(executors={"default": {"type": "threadpool", "max_workers": scheduler_workers}})
+        self.scheduler = AsyncIOScheduler()
 
     async def _run_blocking(self, func, *args, **kwargs):
         return await run_blocking(func, *args, **kwargs)

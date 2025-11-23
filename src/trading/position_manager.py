@@ -1,6 +1,8 @@
 """Position management."""
 
 import logging
+import math
+import time
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +13,9 @@ from ..database.repository import BotStatusRepository, PositionRepository, Setti
 from ..exchange.binance_client import BinanceClient
 
 logger = logging.getLogger(__name__)
+
+_POSITION_CONFIRMATION_TIMEOUT = 3.0
+_POSITION_CONFIRMATION_INTERVAL = 0.25
 
 
 class PositionManager:
@@ -54,6 +59,7 @@ class PositionManager:
         take_profit_price: Optional[float] = None,
         stop_loss_price: Optional[float] = None,
         metadata: Optional[Dict] = None,
+        reference_entry_price: Optional[float] = None,
     ) -> Optional[Dict]:
         """Open a new position.
 
@@ -62,18 +68,19 @@ class PositionManager:
             margin: Margin in USDT
             leverage: Leverage to use
             direction: 'long' or 'short'
-            take_profit_price: Optional custom take profit level
-            stop_loss_price: Optional stop loss reference
+            take_profit_price: Strategy-provided take profit level (pre-trade)
+            stop_loss_price: Strategy-provided stop loss reference
             metadata: Additional metadata stored in DB
+            reference_entry_price: Strategy entry assumption for TP/SL recalculation
 
         Returns: Dict with position info or None if failed
         """
         order = None
         try:
             direction = direction.lower()
+            reference_entry = float(reference_entry_price) if reference_entry_price else None
             logger.info(f"Opening {direction} position: {symbol}, Margin={margin}, Leverage={leverage}x")
 
-            # Open position on exchange
             if direction == "long":
                 order = self.client.open_long_position(symbol, margin, leverage)
             else:
@@ -83,87 +90,91 @@ class PositionManager:
                 logger.error(f"Failed to open position for {symbol}")
                 return None
 
-            # Get entry price from order
             entry_price = float(order.get("average", 0) or order.get("price", 0))
             if entry_price == 0:
-                # Fallback to current price if order doesn't have price
                 ticker = self.client.get_ticker(symbol)
                 entry_price = ticker["last"] if ticker else 0
 
             if entry_price == 0:
                 logger.error(f"Could not determine entry price for {symbol}")
-                # Try to close orphaned exchange position
-                if order:
-                    quantity = float(order.get("filled", 0) or order.get("amount", 0))
-                    if quantity > 0:
-                        try:
-                            self.client.close_short_position(symbol, quantity)
-                            logger.info(f"Closed orphaned position for {symbol}")
-                        except:
-                            logger.error(f"Failed to close orphaned position for {symbol}")
+                quantity = float(order.get("filled", 0) or order.get("amount", 0))
+                if quantity > 0:
+                    try:
+                        self._close_orphaned_position(symbol, direction, quantity)
+                    except Exception:
+                        logger.error(f"Failed to close orphaned position for {symbol}")
                 return None
 
-            # Calculate quantity from order
             quantity = float(order.get("filled", 0) or order.get("amount", 0))
 
-            # Calculate take profit price
-            tp_price = (
-                float(take_profit_price)
-                if take_profit_price is not None
-                else self.calculate_take_profit_price(entry_price, direction)
+            snapshot = self._wait_for_position_confirmation(symbol, direction)
+            if snapshot:
+                entry_from_exchange = float(snapshot.get("entryPrice") or 0)
+                if entry_from_exchange > 0:
+                    entry_price = entry_from_exchange
+                snapshot_qty = abs(float(snapshot.get("positionAmt", 0) or 0))
+                if snapshot_qty > 0:
+                    quantity = snapshot_qty
+
+            final_tp_price = self._determine_take_profit_price(
+                direction=direction,
+                actual_entry=entry_price,
+                strategy_target=take_profit_price,
+                reference_entry=reference_entry,
+            )
+            final_sl_price = self._determine_stop_loss_price(
+                direction=direction,
+                actual_entry=entry_price,
+                strategy_stop=stop_loss_price,
+                reference_entry=reference_entry,
             )
 
-            # Begin nested transaction for database operations
             self.session.begin_nested()
 
             try:
-                # Save position to database
+                metadata_to_store = dict(metadata) if metadata else {}
+                if reference_entry is not None:
+                    metadata_to_store.setdefault("strategy_reference_entry_price", reference_entry)
+
                 position = self.position_repo.create(
                     symbol=symbol,
                     entry_price=entry_price,
                     quantity=quantity,
                     margin=margin,
                     leverage=leverage,
-                    take_profit_price=tp_price,
+                    take_profit_price=final_tp_price,
                     side=direction,
-                    stop_loss_price=stop_loss_price,
+                    stop_loss_price=final_sl_price,
                     order_id=order.get("id"),
                     source="bot_auto",
-                    source_metadata=metadata,
+                    source_metadata=metadata_to_store or None,
                 )
 
-                # Place take-profit limit order immediately
                 tp_order = self.client.create_limit_order(
                     symbol=symbol,
                     side="sell" if direction == "long" else "buy",
                     quantity=quantity,
-                    price=tp_price,
+                    price=final_tp_price,
                     position_side="LONG" if direction == "long" else "SHORT",
                 )
 
                 if tp_order:
-                    # Record TP limit order in database
                     self.position_repo.place_take_profit_order(position.id, tp_order.get("id"))
-                    logger.info(f"Take-profit limit order placed: {tp_order.get('id')} @ {tp_price:.4f}")
+                    logger.info(f"Take-profit limit order placed: {tp_order.get('id')} @ {final_tp_price:.4f}")
                 else:
                     logger.warning(f"Failed to place take-profit limit order for {symbol}")
-                    # Mark TP order as failed
                     self.position_repo.update_take_profit_status(
                         position.id, "failed", error_message="Failed to place limit order"
                     )
 
-                # Update bot statistics
                 self.bot_status_repo.increment_opened()
-
-                # Commit transaction
                 self.session.commit()
 
                 logger.info(
                     f"Position opened: {symbol}, "
                     f"Entry={entry_price:.4f}, "
                     f"Quantity={quantity:.8f}, "
-                    f"TP={tp_price:.4f} ({self.get_take_profit_pct()}%), "
-                    f"TP Order={tp_order.get('id') if tp_order else 'FAILED'}, "
+                    f"TP={final_tp_price:.4f}, "
                     f"Side={direction.upper()}"
                 )
 
@@ -174,47 +185,145 @@ class PositionManager:
                     "quantity": quantity,
                     "margin": margin,
                     "leverage": leverage,
-                    "take_profit_price": tp_price,
-                    "stop_loss_price": stop_loss_price,
+                    "take_profit_price": final_tp_price,
+                    "stop_loss_price": final_sl_price,
                     "direction": direction,
                     "order_id": order.get("id"),
                     "take_profit_order_id": tp_order.get("id") if tp_order else None,
                 }
 
             except Exception as db_error:
-                # Rollback database transaction
                 self.session.rollback()
                 logger.error(f"Database error, rolling back: {db_error}")
-
-                # Try to close orphaned exchange position
                 try:
-                    if direction == "long":
-                        self.client.close_long_position(symbol, quantity)
-                    else:
-                        self.client.close_short_position(symbol, quantity)
-                    logger.info(f"Closed orphaned position after DB error for {symbol}")
-                except:
+                    self._close_orphaned_position(symbol, direction, quantity)
+                except Exception:
                     logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
-
                 return None
 
         except Exception as e:
             logger.error(f"Error opening position for {symbol}: {e}")
-
-            # Try to close orphaned exchange position
             if order:
                 try:
                     quantity = float(order.get("filled", 0) or order.get("amount", 0))
                     if quantity > 0:
-                        if direction == "long":
-                            self.client.close_long_position(symbol, quantity)
-                        else:
-                            self.client.close_short_position(symbol, quantity)
-                        logger.info(f"Closed orphaned position after error for {symbol}")
-                except:
+                        self._close_orphaned_position(symbol, direction, quantity)
+                except Exception:
                     logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
-
             return None
+
+    def _close_orphaned_position(self, symbol: str, direction: str, quantity: float) -> None:
+        """Attempt to close a partially opened position when bookkeeping fails."""
+        if quantity <= 0:
+            return
+        if direction == "long":
+            self.client.close_long_position(symbol, quantity)
+        else:
+            self.client.close_short_position(symbol, quantity)
+        logger.info(f"Closed orphaned position for {symbol}")
+
+    def _wait_for_position_confirmation(self, symbol: str, direction: str) -> Optional[Dict]:
+        """Poll exchange for a short period to obtain the confirmed entry price."""
+        deadline = time.monotonic() + _POSITION_CONFIRMATION_TIMEOUT
+        direction = direction.lower()
+        while time.monotonic() < deadline:
+            snapshot = self.client.get_position_by_symbol(symbol)
+            if not snapshot:
+                time.sleep(_POSITION_CONFIRMATION_INTERVAL)
+                continue
+            position_amt = float(snapshot.get("positionAmt", 0) or 0)
+            if (direction == "long" and position_amt > 0) or (direction == "short" and position_amt < 0):
+                return snapshot
+            time.sleep(_POSITION_CONFIRMATION_INTERVAL)
+
+        logger.warning(
+            "Timed out waiting for %s position confirmation on %s after %.1fs",
+            direction,
+            symbol,
+            _POSITION_CONFIRMATION_TIMEOUT,
+        )
+        return None
+
+    def _determine_take_profit_price(
+        self,
+        *,
+        direction: str,
+        actual_entry: float,
+        strategy_target: Optional[float],
+        reference_entry: Optional[float],
+    ) -> float:
+        adjusted = self._recalculate_price(
+            actual_entry=actual_entry,
+            reference_entry=reference_entry,
+            strategy_price=strategy_target,
+            direction=direction,
+            mode="tp",
+        )
+        if adjusted is not None:
+            return adjusted
+
+        if strategy_target is not None and self._is_price_valid(direction, actual_entry, float(strategy_target), "tp"):
+            return float(strategy_target)
+
+        return self.calculate_take_profit_price(actual_entry, direction)
+
+    def _determine_stop_loss_price(
+        self,
+        *,
+        direction: str,
+        actual_entry: float,
+        strategy_stop: Optional[float],
+        reference_entry: Optional[float],
+    ) -> Optional[float]:
+        adjusted = self._recalculate_price(
+            actual_entry=actual_entry,
+            reference_entry=reference_entry,
+            strategy_price=strategy_stop,
+            direction=direction,
+            mode="sl",
+        )
+        if adjusted is not None:
+            return adjusted
+
+        if strategy_stop is not None and self._is_price_valid(direction, actual_entry, float(strategy_stop), "sl"):
+            return float(strategy_stop)
+
+        return None
+
+    def _recalculate_price(
+        self,
+        *,
+        actual_entry: float,
+        reference_entry: Optional[float],
+        strategy_price: Optional[float],
+        direction: str,
+        mode: str,
+    ) -> Optional[float]:
+        if strategy_price is None or reference_entry is None or reference_entry <= 0:
+            return None
+        try:
+            relative_move = (float(strategy_price) - reference_entry) / reference_entry
+            recalculated = actual_entry * (1 + relative_move)
+        except Exception:
+            return None
+
+        if not math.isfinite(recalculated):
+            return None
+
+        if not self._is_price_valid(direction, actual_entry, recalculated, mode):
+            return None
+
+        return round(recalculated, 6)
+
+    def _is_price_valid(self, direction: str, entry_price: float, candidate: float, mode: str) -> bool:
+        """Validate that candidate TP/SL sits on the correct side of entry."""
+        if candidate <= 0:
+            return False
+        direction = direction.lower()
+        if mode == "tp":
+            return candidate > entry_price if direction == "long" else candidate < entry_price
+        # mode == "sl"
+        return candidate < entry_price if direction == "long" else candidate > entry_price
 
     def close_position(self, position_id: int, reason: str = "take_profit") -> Optional[Dict]:
         """Close an open position.

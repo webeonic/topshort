@@ -96,10 +96,12 @@ class TelegramBot:
 
     async def notify_position_opened(self, position_info: dict):
         """Send notification when position is opened."""
+        direction = position_info.get("direction", "").upper() or "N/A"
         message = f"""
 🟢 *New Position Opened*
 
 📊 *{position_info['symbol']}*
+🧭 Direction: {direction}
 💰 Entry: {position_info['entry_price']:.4f}
 🎯 TP: {position_info['take_profit_price']:.4f}
 📈 Leverage: {position_info['leverage']}x
