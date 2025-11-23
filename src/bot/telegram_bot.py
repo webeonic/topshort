@@ -6,6 +6,7 @@ from typing import Optional
 
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.helpers import escape_markdown
 
 from ..config import ConcurrencyConfig, TelegramConfig
 from .callback_handler import CallbackHandler
@@ -45,6 +46,11 @@ class TelegramBot:
 
         # Initialize keyboard templates
         init_keyboard_templates(session)
+
+    @staticmethod
+    def _escape_md(value: object) -> str:
+        """Escape user content for Markdown parse mode."""
+        return escape_markdown(str(value), version=1)
 
     def setup(self):
         """Setup bot application and handlers."""
@@ -97,10 +103,11 @@ class TelegramBot:
     async def notify_position_opened(self, position_info: dict):
         """Send notification when position is opened."""
         direction = position_info.get("direction", "").upper() or "N/A"
+        symbol = self._escape_md(position_info["symbol"])
         message = f"""
 🟢 *New Position Opened*
 
-📊 *{position_info['symbol']}*
+📊 *{symbol}*
 🧭 Direction: {direction}
 💰 Entry: {position_info['entry_price']:.4f}
 🎯 TP: {position_info['take_profit_price']:.4f}
@@ -113,15 +120,17 @@ class TelegramBot:
     async def notify_position_closed(self, close_info: dict):
         """Send notification when position is closed."""
         pnl_emoji = "🟢" if close_info["pnl"] > 0 else "🔴"
+        symbol = self._escape_md(close_info["symbol"])
+        reason = self._escape_md(close_info["reason"])
 
         message = f"""
 🔵 *Position Closed*
 
-📊 *{close_info['symbol']}*
+📊 *{symbol}*
 💰 Entry: {close_info['entry_price']:.4f}
 💰 Exit: {close_info['exit_price']:.4f}
 {pnl_emoji} P&L: {close_info['pnl']:.2f} USDT ({close_info['pnl_pct']:.2f}%)
-📝 Reason: {close_info['reason']}
+📝 Reason: {reason}
 🔖 ID: {close_info['position_id']}
 """
         await self.send_message(message)
@@ -138,21 +147,22 @@ class TelegramBot:
         if scan_result.get("signals_found", 0) > 0 and scan_result.get("signals"):
             message += "\n📈 Signal pairs:\n"
             for signal in scan_result["signals"]:
-                message += f"  • {signal['symbol']}\n"
+                message += f"  • {self._escape_md(signal['symbol'])}\n"
 
         if scan_result.get("positions_opened", 0) > 0:
             message += "\n🟢 New positions:\n"
             for pos in scan_result.get("opened_positions", []):
-                message += f"  {pos['symbol']} @ {pos['entry_price']:.4f}\n"
+                message += f"  {self._escape_md(pos['symbol'])} @ {pos['entry_price']:.4f}\n"
 
         await self.send_message(message)
 
     async def notify_error(self, error_message: str):
         """Send error notification."""
+        escaped_error = self._escape_md(error_message)
         message = f"""
 ❌ *Error*
 
-{error_message}
+{escaped_error}
 """
         await self.send_message(message)
 
