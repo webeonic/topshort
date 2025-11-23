@@ -57,7 +57,9 @@ def config():
 @pytest.fixture
 def position_manager(db_session, mock_client, config):
     """Create PositionManager instance."""
-    return PositionManager(db_session, mock_client, config)
+    manager = PositionManager(db_session, mock_client, config)
+    manager._wait_for_position_confirmation = MagicMock(return_value=None)
+    return manager
 
 
 class TestPositionManagerInit:
@@ -196,6 +198,7 @@ class TestOpenPosition:
         """Test that limit order is created with correct parameters."""
         mock_client.open_short_position.return_value = {"id": "ORDER123", "average": 50000.0, "filled": 0.1}
         mock_client.create_limit_order.return_value = {"id": "TP_ORDER123"}
+        position_manager._wait_for_position_confirmation.return_value = None
 
         position_manager.open_position("BTCUSDT", 100.0, 20)
 
@@ -230,6 +233,34 @@ class TestOpenPosition:
         assert position is not None
         assert position.side == "long"
         assert position.stop_loss_price == 1950.0
+
+    def test_open_position_recalculates_tp_from_strategy_reference(self, position_manager, mock_client):
+        """TP should be recalculated from strategy reference entry when actual fill differs."""
+        mock_client.open_short_position.return_value = {"id": "ORDER123", "average": 1.5111, "filled": 661.7}
+        mock_client.create_limit_order.return_value = {"id": "TP_ORDER123"}
+        position_manager._wait_for_position_confirmation.return_value = {
+            "entryPrice": 1.5111,
+            "positionAmt": "-661.7",
+        }
+
+        result = position_manager.open_position(
+            "TONUSDT",
+            50.0,
+            20,
+            take_profit_price=1.6135,
+            reference_entry_price=1.62075,
+        )
+
+        assert result is not None
+        expected_tp = pytest.approx(1.5111 * (1 + (1.6135 - 1.62075) / 1.62075), rel=1e-6)
+        assert result["take_profit_price"] == expected_tp
+        mock_client.create_limit_order.assert_called_with(
+            symbol="TONUSDT",
+            side="buy",
+            quantity=661.7,
+            price=expected_tp,
+            position_side="SHORT",
+        )
 
 
 class TestClosePosition:
