@@ -104,6 +104,7 @@ class TelegramBot:
         """Send notification when position is opened."""
         direction = position_info.get("direction", "").upper() or "N/A"
         symbol = self._escape_md(position_info["symbol"])
+        order_id = self._escape_md(position_info.get("order_id", "N/A"))
         message = f"""
 🟢 *New Position Opened*
 
@@ -113,7 +114,7 @@ class TelegramBot:
 🎯 TP: {position_info['take_profit_price']:.4f}
 📈 Leverage: {position_info['leverage']}x
 💵 Margin: {position_info['margin']:.2f} USDT
-🔖 Order ID: {position_info.get('order_id', 'N/A')}
+🔖 Order ID: {order_id}
 """
         await self.send_message(message)
 
@@ -123,6 +124,7 @@ class TelegramBot:
         symbol = self._escape_md(close_info["symbol"])
         reason = self._escape_md(close_info["reason"])
 
+        position_id = self._escape_md(close_info["position_id"])
         message = f"""
 🔵 *Position Closed*
 
@@ -131,7 +133,7 @@ class TelegramBot:
 💰 Exit: {close_info['exit_price']:.4f}
 {pnl_emoji} P&L: {close_info['pnl']:.2f} USDT ({close_info['pnl_pct']:.2f}%)
 📝 Reason: {reason}
-🔖 ID: {close_info['position_id']}
+🔖 ID: {position_id}
 """
         await self.send_message(message)
 
