@@ -211,6 +211,16 @@ The bot automatically scans the market every hour and opens short positions on c
             logger.error(f"Error in status command: {e}")
             await update.effective_message.reply_text(f"❌ Error: {e}")
 
+    def _format_strategy_label(self, strategy: str | None) -> str:
+        """Format strategy name for display."""
+        if not strategy:
+            return "N/A"
+        labels = {
+            "pump_cooldown": "Pump & Cooldown",
+            "order_block": "Order Block",
+        }
+        return labels.get(strategy, strategy)
+
     async def positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /positions command."""
         try:
@@ -224,9 +234,11 @@ The bot automatically scans the market every hour and opens short positions on c
 
             for pos in positions:
                 pnl_emoji = "🟢" if pos["unrealized_pnl"] > 0 else "🔴"
+                strategy = self._format_strategy_label(pos.get("strategy"))
                 message += f"""
 *{pos['symbol']}*
 🧭 Side: {pos.get('side', 'short').upper()}
+🎲 Strategy: {strategy}
 💰 Entry: {pos['entry_price']:.4f}
 📈 Current: {pos['current_price']:.4f}
 🎯 TP: {pos['take_profit_price']:.4f}
@@ -256,8 +268,10 @@ The bot automatically scans the market every hour and opens short positions on c
 
             for trade in history:
                 pnl_emoji = "🟢" if trade.pnl > 0 else "🔴"
+                strategy = self._format_strategy_label(trade.strategy)
                 message += f"""
 *{trade.symbol}*
+🎲 Strategy: {strategy}
 💰 Entry: {trade.entry_price:.4f}
 💰 Exit: {trade.exit_price:.4f}
 {pnl_emoji} P&L: {trade.pnl:.2f} USDT ({trade.pnl_pct:.2f}%)
@@ -751,10 +765,12 @@ The bot automatically scans the market every hour and opens short positions on c
 
             if result:
                 pnl_emoji = "🟢" if result["pnl"] > 0 else "🔴"
+                strategy = self._format_strategy_label(result.get("strategy"))
                 message = f"""
 ✅ Position closed
 
 *{result['symbol']}*
+🎲 Strategy: {strategy}
 💰 Entry: {result['entry_price']:.4f}
 💰 Exit: {result['exit_price']:.4f}
 {pnl_emoji} P&L: {result['pnl']:.2f} USDT ({result['pnl_pct']:.2f}%)

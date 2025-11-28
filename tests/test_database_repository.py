@@ -361,6 +361,58 @@ class TestPositionRepository:
         assert history is not None
         assert history.close_reason == "take_profit"
 
+    def test_close_position_saves_strategy_to_history(self, db_session):
+        """Test that strategy from source_metadata is saved to trade history."""
+        import json
+
+        position = Position(
+            symbol="ETHUSDT",
+            entry_price=3000.0,
+            current_price=3000.0,
+            quantity=1.0,
+            margin=150.0,
+            leverage=20,
+            take_profit_price=2850.0,
+            status="open",
+            opened_at=datetime.utcnow(),
+            source_metadata=json.dumps({"strategy": "order_block", "rr_ratio": 2.5}),
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        repo = PositionRepository(db_session)
+        repo.close(position.id, exit_price=2850.0, close_reason="take_profit")
+
+        # Verify strategy was saved to history
+        history = db_session.query(TradeHistory).filter_by(symbol="ETHUSDT").first()
+        assert history is not None
+        assert history.strategy == "order_block"
+
+    def test_close_position_handles_missing_strategy(self, db_session):
+        """Test that closing position without strategy works correctly."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+            opened_at=datetime.utcnow(),
+            source_metadata=None,
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        repo = PositionRepository(db_session)
+        repo.close(position.id, exit_price=47500.0, close_reason="take_profit")
+
+        # Verify history was created with None strategy
+        history = db_session.query(TradeHistory).filter_by(symbol="BTCUSDT").first()
+        assert history is not None
+        assert history.strategy is None
+
     def test_close_position_pnl_calculation(self, db_session):
         """Test P&L calculation for short position."""
         position = Position(

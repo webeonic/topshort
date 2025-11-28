@@ -134,16 +134,28 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Error sending message: {e}")
 
+    def _format_strategy_label(self, strategy: str | None) -> str:
+        """Format strategy name for display."""
+        if not strategy:
+            return "N/A"
+        labels = {
+            "pump_cooldown": "Pump & Cooldown",
+            "order_block": "Order Block",
+        }
+        return labels.get(strategy, strategy)
+
     async def notify_position_opened(self, position_info: dict):
         """Send notification when position is opened."""
         direction = position_info.get("direction", "").upper() or "N/A"
         symbol = self._escape_md(position_info["symbol"])
         order_id = self._escape_md(position_info.get("order_id", "N/A"))
+        strategy = self._format_strategy_label(position_info.get("strategy"))
         message = f"""
 🟢 *New Position Opened*
 
 📊 *{symbol}*
 🧭 Direction: {direction}
+🎲 Strategy: {strategy}
 💰 Entry: {position_info['entry_price']:.4f}
 🎯 TP: {position_info['take_profit_price']:.4f}
 📈 Leverage: {position_info['leverage']}x
@@ -157,12 +169,14 @@ class TelegramBot:
         pnl_emoji = "🟢" if close_info["pnl"] > 0 else "🔴"
         symbol = self._escape_md(close_info["symbol"])
         reason = self._escape_md(close_info["reason"])
+        strategy = self._format_strategy_label(close_info.get("strategy"))
 
         position_id = self._escape_md(close_info["position_id"])
         message = f"""
 🔵 *Position Closed*
 
 📊 *{symbol}*
+🎲 Strategy: {strategy}
 💰 Entry: {close_info['entry_price']:.4f}
 💰 Exit: {close_info['exit_price']:.4f}
 {pnl_emoji} P&L: {close_info['pnl']:.2f} USDT ({close_info['pnl_pct']:.2f}%)
@@ -173,9 +187,11 @@ class TelegramBot:
 
     async def notify_scan_complete(self, scan_result: dict):
         """Send notification when scan is complete."""
+        strategy = self._format_strategy_label(scan_result.get("strategy_mode"))
         message = f"""
 🔍 *Scan Completed*
 
+🎲 Strategy: {strategy}
 📊 Signals found: {scan_result['signals_found']}
 ✅ Positions opened: {scan_result['positions_opened']}
 """
@@ -188,7 +204,8 @@ class TelegramBot:
         if scan_result.get("positions_opened", 0) > 0:
             message += "\n🟢 New positions:\n"
             for pos in scan_result.get("opened_positions", []):
-                message += f"  {self._escape_md(pos['symbol'])} @ {pos['entry_price']:.4f}\n"
+                pos_strategy = self._format_strategy_label(pos.get("strategy"))
+                message += f"  {self._escape_md(pos['symbol'])} @ {pos['entry_price']:.4f} ({pos_strategy})\n"
 
         await self.send_message(message)
 

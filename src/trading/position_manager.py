@@ -1,5 +1,6 @@
 """Position management."""
 
+import json
 import logging
 import math
 import time
@@ -187,6 +188,9 @@ class PositionManager:
                     f"Side={direction.upper()}"
                 )
 
+                # Extract strategy from metadata
+                strategy = metadata_to_store.get("strategy") if metadata_to_store else None
+
                 return {
                     "position_id": position.id,
                     "symbol": symbol,
@@ -199,6 +203,7 @@ class PositionManager:
                     "direction": direction,
                     "order_id": order.get("id"),
                     "take_profit_order_id": tp_order.get("id") if tp_order else None,
+                    "strategy": strategy,
                 }
 
             except Exception as db_error:
@@ -352,6 +357,19 @@ class PositionManager:
         # mode == "sl"
         return candidate < entry_price if direction == "long" else candidate > entry_price
 
+    def _extract_strategy_from_metadata(self, source_metadata) -> Optional[str]:
+        """Extract strategy name from position source_metadata."""
+        if not source_metadata:
+            return None
+        try:
+            if isinstance(source_metadata, str):
+                metadata = json.loads(source_metadata)
+            else:
+                metadata = source_metadata
+            return metadata.get("strategy")
+        except (json.JSONDecodeError, TypeError):
+            return None
+
     def close_position(self, position_id: int, reason: str = "take_profit") -> Optional[Dict]:
         """Close an open position.
 
@@ -370,6 +388,9 @@ class PositionManager:
             if position.status != "open":
                 logger.warning(f"Position {position_id} is not open: {position.status}")
                 return None
+
+            # Extract strategy before position might be closed
+            strategy = self._extract_strategy_from_metadata(position.source_metadata)
 
             logger.info(f"Closing position {position_id}: {position.symbol}, Reason={reason}")
 
@@ -422,6 +443,7 @@ class PositionManager:
                     "pnl_pct": closed_position.pnl_pct,
                     "reason": f"{reason}_sync",
                     "synced": True,
+                    "strategy": strategy,
                 }
 
             # Close position on exchange
@@ -477,6 +499,7 @@ class PositionManager:
                     "pnl_pct": closed_position.pnl_pct,
                     "reason": f"{reason}_sync",
                     "synced": True,
+                    "strategy": strategy,
                 }
 
             # Get exit price from order
@@ -507,6 +530,7 @@ class PositionManager:
                 "pnl": closed_position.pnl,
                 "pnl_pct": closed_position.pnl_pct,
                 "reason": reason,
+                "strategy": strategy,
             }
 
         except Exception as e:
@@ -631,6 +655,9 @@ class PositionManager:
             unrealized_pnl = 0.0
             unrealized_pnl_pct = 0.0
 
+        # Extract strategy from source_metadata
+        strategy = self._extract_strategy_from_metadata(position.source_metadata)
+
         return {
             "id": position.id,
             "symbol": position.symbol,
@@ -645,4 +672,5 @@ class PositionManager:
             "unrealized_pnl": round(unrealized_pnl, 2),
             "unrealized_pnl_pct": round(unrealized_pnl_pct, 2),
             "opened_at": position.opened_at.isoformat() if position.opened_at else None,
+            "strategy": strategy,
         }

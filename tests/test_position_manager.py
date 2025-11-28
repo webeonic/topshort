@@ -908,3 +908,124 @@ class TestCriticalErrorTracking:
         assert error["symbol"] == "ETHUSDT"
         assert error["direction"] == "long"
         assert error["quantity"] == 1.5
+
+
+class TestStrategyTracking:
+    """Test strategy tracking in positions."""
+
+    def test_open_position_returns_strategy(self, position_manager, mock_client, db_session):
+        """Test that open_position returns strategy from metadata."""
+        mock_client.open_short_position.return_value = {"id": "ORDER123", "average": 50000.0, "filled": 0.1}
+        mock_client.create_limit_order.return_value = {"id": "TP_ORDER123"}
+
+        metadata = {"strategy": "pump_cooldown", "score": 0.85}
+        result = position_manager.open_position("BTCUSDT", 100.0, 20, metadata=metadata)
+
+        assert result is not None
+        assert result.get("strategy") == "pump_cooldown"
+
+    def test_open_position_returns_none_strategy_without_metadata(self, position_manager, mock_client, db_session):
+        """Test that open_position returns None strategy when no metadata."""
+        mock_client.open_short_position.return_value = {"id": "ORDER123", "average": 50000.0, "filled": 0.1}
+        mock_client.create_limit_order.return_value = {"id": "TP_ORDER123"}
+
+        result = position_manager.open_position("BTCUSDT", 100.0, 20)
+
+        assert result is not None
+        assert result.get("strategy") is None
+
+    def test_build_position_snapshot_includes_strategy(self, position_manager, db_session):
+        """Test that _build_position_snapshot extracts strategy from source_metadata."""
+        import json
+
+        position = Position(
+            symbol="ETHUSDT",
+            entry_price=3000.0,
+            current_price=2950.0,
+            quantity=1.0,
+            margin=150.0,
+            leverage=20,
+            take_profit_price=2850.0,
+            status="open",
+            source_metadata=json.dumps({"strategy": "order_block", "rr_ratio": 2.5}),
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        snapshot = position_manager._build_position_snapshot(position)
+
+        assert snapshot["strategy"] == "order_block"
+
+    def test_build_position_snapshot_handles_missing_strategy(self, position_manager, db_session):
+        """Test that _build_position_snapshot handles positions without strategy."""
+        position = Position(
+            symbol="ETHUSDT",
+            entry_price=3000.0,
+            current_price=2950.0,
+            quantity=1.0,
+            margin=150.0,
+            leverage=20,
+            take_profit_price=2850.0,
+            status="open",
+            source_metadata=None,
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        snapshot = position_manager._build_position_snapshot(position)
+
+        assert snapshot["strategy"] is None
+
+    def test_close_position_returns_strategy(self, position_manager, mock_client, db_session):
+        """Test that close_position returns strategy."""
+        import json
+
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+            source_metadata=json.dumps({"strategy": "pump_cooldown"}),
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
+        mock_client.close_short_position.return_value = {"average": 47500.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        assert result is not None
+        assert result.get("strategy") == "pump_cooldown"
+
+    def test_extract_strategy_from_metadata_string(self, position_manager):
+        """Test _extract_strategy_from_metadata with JSON string."""
+        import json
+
+        metadata = json.dumps({"strategy": "order_block", "score": 0.9})
+        strategy = position_manager._extract_strategy_from_metadata(metadata)
+
+        assert strategy == "order_block"
+
+    def test_extract_strategy_from_metadata_dict(self, position_manager):
+        """Test _extract_strategy_from_metadata with dict."""
+        metadata = {"strategy": "pump_cooldown", "score": 0.75}
+        strategy = position_manager._extract_strategy_from_metadata(metadata)
+
+        assert strategy == "pump_cooldown"
+
+    def test_extract_strategy_from_metadata_none(self, position_manager):
+        """Test _extract_strategy_from_metadata with None."""
+        strategy = position_manager._extract_strategy_from_metadata(None)
+
+        assert strategy is None
+
+    def test_extract_strategy_from_metadata_invalid_json(self, position_manager):
+        """Test _extract_strategy_from_metadata with invalid JSON."""
+        strategy = position_manager._extract_strategy_from_metadata("not valid json")
+
+        assert strategy is None

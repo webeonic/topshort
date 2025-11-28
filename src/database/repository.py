@@ -186,6 +186,18 @@ class PositionRepository:
         position.pnl = float(pnl)
         position.pnl_pct = float(pnl_pct)
 
+        # Extract strategy from source_metadata
+        strategy = None
+        if position.source_metadata:
+            try:
+                if isinstance(position.source_metadata, str):
+                    metadata = json.loads(position.source_metadata)
+                else:
+                    metadata = position.source_metadata
+                strategy = metadata.get("strategy")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         # Create history record with source tracking
         history = TradeHistory(
             symbol=position.symbol,
@@ -196,6 +208,7 @@ class PositionRepository:
             leverage=position.leverage,
             side=position.side,
             source=position.source,
+            strategy=strategy,
             take_profit_price=position.take_profit_price,
             stop_loss_price=position.stop_loss_price,
             entry_order_id=position.order_id,

@@ -443,17 +443,21 @@ class TradingEngine:
                 # Open position (within lock)
                 logger.info(f"Opening position for {symbol} (Score: {signal['score']:.2f})")
                 direction = signal.get("direction", "short") if strategy_mode == "order_block" else "short"
-                metadata: Optional[Dict[str, Any]] = None
                 tp_price = None
                 sl_price = None
                 if strategy_mode == "order_block":
                     tp_targets = signal.get("targets") or []
                     tp_price = tp_targets[0] if tp_targets else None
                     sl_price = signal.get("stop_loss")
-                    metadata = {
-                        "strategy": "order_block_breakout",
+                    metadata: Dict[str, Any] = {
+                        "strategy": "order_block",
                         "score": signal.get("score"),
                         "rr_ratio": signal.get("rr_ratio"),
+                    }
+                else:
+                    metadata = {
+                        "strategy": "pump_cooldown",
+                        "score": signal.get("score"),
                     }
 
                 reference_entry_price = signal.get("entry_price") or signal.get("current_price")
