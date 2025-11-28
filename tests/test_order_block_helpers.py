@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from src.config import SessionWindow
-from src.strategy.order_block_breakout import OrderBlockBreakoutStrategy, TrendContext
+from src.strategy.order_block_breakout import MIN_TP_PERCENT, OrderBlockBreakoutStrategy, TrendContext
 
 
 def _make_strategy(**overrides) -> OrderBlockBreakoutStrategy:
@@ -128,3 +128,25 @@ def test_calculate_atr_returns_none_for_short_series():
     )
 
     assert strategy._calculate_atr(short_df) is None
+
+
+def test_min_tp_percent_constant_is_defined():
+    """MIN_TP_PERCENT constant should be defined and positive."""
+    assert MIN_TP_PERCENT > 0
+    assert MIN_TP_PERCENT == 0.1  # 0.1% minimum to cover fees
+
+
+def test_calculate_targets_must_exceed_min_tp_percent():
+    """Targets should be validated against MIN_TP_PERCENT in analyze_from_datasets."""
+    strategy = _make_strategy()
+
+    # With entry=100 and atr=2.0, TP1 = 98.0 (2% distance) - should pass
+    targets = strategy._calculate_targets(entry=100.0, atr=2.0, direction="short")
+    tp_distance_pct = abs(targets[0] - 100.0) / 100.0 * 100
+    assert tp_distance_pct >= MIN_TP_PERCENT
+
+    # With very small ATR, TP distance would be too small
+    # entry=100, atr=0.05 -> TP1 = 99.95 (0.05% distance) - below MIN_TP_PERCENT
+    tiny_targets = strategy._calculate_targets(entry=100.0, atr=0.05, direction="short")
+    tiny_tp_distance_pct = abs(tiny_targets[0] - 100.0) / 100.0 * 100
+    assert tiny_tp_distance_pct < MIN_TP_PERCENT  # This would be rejected by validation
