@@ -53,7 +53,8 @@ def _get_executor() -> ThreadPoolExecutor:
     if not _executor:
         logger.warning("Async executor not configured, using default settings")
         configure_async_executor()
-    assert _executor is not None
+    if _executor is None:
+        raise RuntimeError("Failed to initialize async executor")
     return _executor
 
 

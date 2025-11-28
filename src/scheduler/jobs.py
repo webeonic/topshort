@@ -37,13 +37,24 @@ class SchedulerJobs:
         logger.info("Starting job: %s", name)
         return time.perf_counter()
 
-    def _job_end(self, name: str, started_at: float, warn_after: float | None = None):
+    def _job_end(self, name: str, started_at: float, warn_after: float | None = None) -> None:
         duration = time.perf_counter() - started_at
         logger.info("Job %s finished in %.2fs", name, duration)
         if warn_after and duration > warn_after:
             logger.warning("Job %s exceeded threshold %.2fs (took %.2fs)", name, warn_after, duration)
 
-    async def scan_and_trade_job(self):
+    def _cleanup_session(self) -> None:
+        """Remove thread-local session to prevent connection leaks.
+
+        This is important for scoped_session when jobs run in thread pool workers.
+        """
+        try:
+            if hasattr(self.session, "remove"):
+                self.session.remove()
+        except Exception as e:
+            logger.debug("Session cleanup: %s", e)
+
+    async def scan_and_trade_job(self) -> None:
         """Scheduled job to scan market and open positions."""
         start_time = self._job_start("scan_and_trade")
         try:
@@ -73,6 +84,17 @@ class SchedulerJobs:
                 for pos_info in result["opened_positions"]:
                     await self.telegram_bot.notify_position_opened(pos_info)
 
+            # Check for critical errors that need immediate notification
+            if result.get("critical_error"):
+                error = result["critical_error"]
+                await self.telegram_bot.notify_error(
+                    f"🚨 CRITICAL: Orphaned position cleanup failed!\n"
+                    f"Symbol: {error.get('symbol')}\n"
+                    f"Direction: {error.get('direction')}\n"
+                    f"Quantity: {error.get('quantity')}\n"
+                    f"Error: {error.get('cleanup_error')}"
+                )
+
             logger.info(f"Scan job completed: {result['positions_opened']} positions opened")
 
         except Exception as e:
@@ -81,8 +103,9 @@ class SchedulerJobs:
         finally:
             warn_after = self.config.scheduler.scan_interval_minutes * 60
             self._job_end("scan_and_trade", start_time, warn_after=warn_after)
+            self._cleanup_session()
 
-    async def order_block_cycle_job(self):
+    async def order_block_cycle_job(self) -> None:
         """High-frequency Order Block scanner."""
         if not self.config.order_block_strategy.enabled:
             return
@@ -104,14 +127,26 @@ class SchedulerJobs:
                 for pos_info in result["opened_positions"]:
                     await self.telegram_bot.notify_position_opened(pos_info)
 
+            # Check for critical errors that need immediate notification
+            if result.get("critical_error"):
+                error = result["critical_error"]
+                await self.telegram_bot.notify_error(
+                    f"🚨 CRITICAL: Orphaned position cleanup failed!\n"
+                    f"Symbol: {error.get('symbol')}\n"
+                    f"Direction: {error.get('direction')}\n"
+                    f"Quantity: {error.get('quantity')}\n"
+                    f"Error: {error.get('cleanup_error')}"
+                )
+
         except Exception as e:
             logger.error(f"Error in order_block_cycle_job: {e}", exc_info=True)
             await self.telegram_bot.notify_error(f"Order Block scan error: {str(e)}")
         finally:
             warn_after = max(5, self.config.strategy_runtime.order_block_cycle_interval_seconds)
             self._job_end("order_block_cycle", start_time, warn_after=warn_after)
+            self._cleanup_session()
 
-    async def monitor_positions_job(self):
+    async def monitor_positions_job(self) -> None:
         """Scheduled job to monitor open positions."""
         start_time = self._job_start("monitor_positions")
         try:
@@ -140,24 +175,34 @@ class SchedulerJobs:
         finally:
             warn_after = max(10, self.config.scheduler.monitor_interval_seconds)
             self._job_end("monitor_positions", start_time, warn_after=warn_after)
+            self._cleanup_session()
 
-    async def cleanup_data_job(self):
+    async def cleanup_data_job(self) -> None:
         """Scheduled job to cleanup old data."""
         start_time = self._job_start("cleanup_data")
         try:
             logger.info("Running data cleanup job...")
 
-            # Cleanup old market signals (older than 30 days)
-            deleted_signals = await self._run_blocking(lambda: self.signal_repo.cleanup_old_signals(retention_days=30))
+            # Cleanup old market signals
+            retention_days = self.config.scheduler.signal_retention_days
+            deleted_signals = await self._run_blocking(
+                lambda: self.signal_repo.cleanup_old_signals(retention_days=retention_days)
+            )
 
-            logger.info(f"Data cleanup completed: {deleted_signals} old signals removed")
+            # Cleanup stale symbol locks to prevent memory leaks
+            stale_locks_removed = await self._run_blocking(self.engine.cleanup_stale_locks)
+
+            logger.info(
+                f"Data cleanup completed: {deleted_signals} old signals removed, " f"{stale_locks_removed} stale locks cleaned"
+            )
 
         except Exception as e:
             logger.error(f"Error in cleanup_data_job: {e}", exc_info=True)
         finally:
             self._job_end("cleanup_data", start_time, warn_after=60)
+            self._cleanup_session()
 
-    async def refresh_top_pairs_job(self):
+    async def refresh_top_pairs_job(self) -> None:
         """Refresh cached list of top trading pairs."""
         start_time = self._job_start("refresh_top_pairs")
         try:
@@ -178,8 +223,9 @@ class SchedulerJobs:
             logger.error(f"Error refreshing top pairs cache: {e}", exc_info=True)
         finally:
             self._job_end("refresh_top_pairs", start_time, warn_after=120)
+            self._cleanup_session()
 
-    def start(self):
+    def start(self) -> None:
         """Start scheduler with configured jobs."""
         logger.info("Starting scheduler")
 
@@ -248,19 +294,19 @@ class SchedulerJobs:
         self.scheduler.start()
         logger.info("Scheduler started successfully")
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop scheduler."""
         logger.info("Stopping scheduler")
         if self.scheduler.running:
             self.scheduler.shutdown()
         logger.info("Scheduler stopped")
 
-    def pause(self):
+    def pause(self) -> None:
         """Pause all jobs."""
         logger.info("Pausing scheduler jobs")
         self.scheduler.pause()
 
-    def resume(self):
+    def resume(self) -> None:
         """Resume all jobs."""
         logger.info("Resuming scheduler jobs")
         self.scheduler.resume()

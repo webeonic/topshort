@@ -43,6 +43,7 @@ def mock_client():
     client.get_ticker = Mock()
     client.fetch_tickers = Mock()
     client.get_position_by_symbol = Mock()
+    client.fetch_order = Mock()
     return client
 
 
@@ -457,6 +458,140 @@ class TestClosePosition:
         updated = db_session.query(Position).filter_by(id=position.id).first()
         assert updated.status == "closed"
 
+    def test_close_position_uses_tp_order_fill_price_when_position_closed(self, position_manager, mock_client, db_session):
+        """Test that when position is already closed on exchange, TP order fill price is used."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            take_profit_order_id="TP_ORDER_123",
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Position no longer exists on exchange (already closed by TP order)
+        mock_client.get_position_by_symbol.return_value = None
+        # TP order was filled at the TP price
+        mock_client.fetch_order.return_value = {
+            "status": "closed",
+            "average": 47500.0,  # Filled at TP price
+            "filled": 0.1,
+        }
+        # Current market price is much lower (this should NOT be used)
+        mock_client.get_ticker.return_value = {"last": 45000.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        assert result is not None
+        # Should use TP order fill price, not current market price
+        assert result["exit_price"] == 47500.0
+        assert result["pnl"] == 250.0  # (50000 - 47500) * 0.1 = 5%
+        assert result["pnl_pct"] == 5.0
+        assert result["reason"] == "take_profit_sync"
+
+        # Verify fetch_order was called with correct arguments
+        mock_client.fetch_order.assert_called_once_with("TP_ORDER_123", "BTCUSDT")
+        # get_ticker should NOT be called since we got TP order fill price
+        mock_client.get_ticker.assert_not_called()
+
+    def test_close_position_falls_back_to_ticker_when_no_tp_order(self, position_manager, mock_client, db_session):
+        """Test fallback to ticker price when no TP order ID is available."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            take_profit_order_id=None,  # No TP order
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        mock_client.get_position_by_symbol.return_value = None
+        mock_client.get_ticker.return_value = {"last": 45000.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        assert result is not None
+        # Should use ticker price as fallback
+        assert result["exit_price"] == 45000.0
+        mock_client.fetch_order.assert_not_called()
+
+    def test_close_position_falls_back_to_ticker_when_tp_order_not_filled(self, position_manager, mock_client, db_session):
+        """Test fallback to ticker when TP order exists but is not filled."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            take_profit_order_id="TP_ORDER_123",
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        mock_client.get_position_by_symbol.return_value = None
+        # TP order was cancelled, not filled
+        mock_client.fetch_order.return_value = {
+            "status": "canceled",
+            "average": None,
+            "filled": 0,
+        }
+        mock_client.get_ticker.return_value = {"last": 45000.0}
+
+        result = position_manager.close_position(position.id, "manual")
+
+        assert result is not None
+        # Should fall back to ticker price
+        assert result["exit_price"] == 45000.0
+        assert result["reason"] == "manual_sync"
+
+    def test_close_position_uses_tp_order_price_on_reduce_only_error(self, position_manager, mock_client, db_session):
+        """Test TP order fill price is used when ReduceOnly error occurs."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=48000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            take_profit_order_id="TP_ORDER_456",
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Position appears to exist on exchange, but close order fails
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
+        mock_client.close_short_position.return_value = {"error_code": -2022, "message": "Position already closed"}
+        # TP order was filled
+        mock_client.fetch_order.return_value = {
+            "status": "filled",
+            "average": 47500.0,
+        }
+        # Current price is different
+        mock_client.get_ticker.return_value = {"last": 46000.0}
+
+        result = position_manager.close_position(position.id, "take_profit")
+
+        assert result is not None
+        # Should use TP order fill price
+        assert result["exit_price"] == 47500.0
+        assert result["reason"] == "take_profit_sync"
+        mock_client.fetch_order.assert_called_once_with("TP_ORDER_456", "BTCUSDT")
+
 
 class TestMonitorPositions:
     """Test position monitoring."""
@@ -677,3 +812,99 @@ class TestClosePositionBySymbol:
         """Test closing non-existent symbol."""
         result = position_manager.close_position_by_symbol("NONEXISTENT", "manual")
         assert result is None
+
+
+class TestCriticalErrorTracking:
+    """Test critical error tracking for orphaned positions."""
+
+    def test_initial_no_critical_error(self, position_manager):
+        """Test that no critical error exists initially."""
+        error = position_manager.get_and_clear_critical_error()
+        assert error is None
+
+    def test_get_and_clear_removes_error(self, position_manager):
+        """Test that get_and_clear returns and removes the error."""
+        # Manually set error for testing
+        position_manager._last_critical_error = {
+            "type": "orphaned_position_cleanup_failed",
+            "symbol": "BTCUSDT",
+        }
+
+        # First call returns the error
+        error = position_manager.get_and_clear_critical_error()
+        assert error is not None
+        assert error["symbol"] == "BTCUSDT"
+
+        # Second call returns None (error was cleared)
+        error2 = position_manager.get_and_clear_critical_error()
+        assert error2 is None
+
+    def test_orphaned_position_cleanup_failure_sets_critical_error(self, position_manager, mock_client, db_session):
+        """Test that failed orphaned position cleanup sets critical error."""
+        # Setup: exchange returns order but DB save will fail
+        mock_client.open_short_position.return_value = {
+            "id": "ORDER123",
+            "average": 50000.0,
+            "filled": 0.1,
+        }
+
+        # Make create_limit_order raise an exception to trigger DB error path
+        mock_client.create_limit_order.side_effect = Exception("DB Error simulation")
+
+        # Make cleanup also fail
+        mock_client.close_short_position.side_effect = Exception("Cleanup failed!")
+
+        # Open position should fail and set critical error
+        result = position_manager.open_position("BTCUSDT", 100.0, 20)
+        assert result is None
+
+        # Critical error should be set
+        error = position_manager.get_and_clear_critical_error()
+        assert error is not None
+        assert error["type"] == "orphaned_position_cleanup_failed"
+        assert error["symbol"] == "BTCUSDT"
+        assert error["direction"] == "short"
+        assert error["quantity"] == 0.1
+        assert "Cleanup failed!" in error["cleanup_error"]
+        assert "timestamp" in error
+
+    def test_successful_cleanup_no_critical_error(self, position_manager, mock_client, db_session):
+        """Test that successful orphan cleanup doesn't set critical error."""
+        mock_client.open_short_position.return_value = {
+            "id": "ORDER123",
+            "average": 50000.0,
+            "filled": 0.1,
+        }
+        mock_client.create_limit_order.side_effect = Exception("DB Error")
+        mock_client.close_short_position.return_value = {"success": True}  # Cleanup succeeds
+
+        result = position_manager.open_position("BTCUSDT", 100.0, 20)
+        assert result is None
+
+        # No critical error because cleanup succeeded
+        error = position_manager.get_and_clear_critical_error()
+        assert error is None
+
+    def test_critical_error_contains_all_required_fields(self, position_manager):
+        """Test that critical error contains all necessary fields for notification."""
+        # Manually set a complete critical error
+        position_manager._last_critical_error = {
+            "type": "orphaned_position_cleanup_failed",
+            "symbol": "ETHUSDT",
+            "direction": "long",
+            "quantity": 1.5,
+            "original_error": "DB connection lost",
+            "cleanup_error": "API timeout",
+            "timestamp": "2024-01-15T10:30:00",
+        }
+
+        error = position_manager.get_and_clear_critical_error()
+
+        # Verify all fields needed for Telegram notification
+        assert "symbol" in error
+        assert "direction" in error
+        assert "quantity" in error
+        assert "cleanup_error" in error
+        assert error["symbol"] == "ETHUSDT"
+        assert error["direction"] == "long"
+        assert error["quantity"] == 1.5

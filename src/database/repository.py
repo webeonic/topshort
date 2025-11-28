@@ -4,10 +4,13 @@ import json
 import logging
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Dict, List, Optional
+from functools import wraps
+from typing import Callable, Dict, List, Optional, TypeVar
 
 from sqlalchemy import and_, desc, func
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from .models import (
     BotStatus,
@@ -24,6 +27,28 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def db_retry(func: Callable[..., T]) -> Callable[..., T]:
+    """Decorator for retrying database operations on transient failures.
+
+    Retries on SQLAlchemy OperationalError (e.g., database locked, connection issues).
+    Uses exponential backoff: 0.1s, 0.2s, 0.4s (max 3 attempts).
+    """
+
+    @wraps(func)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.1, min=0.1, max=1),
+        retry=retry_if_exception_type(OperationalError),
+        reraise=True,
+    )
+    def wrapper(*args, **kwargs) -> T:
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 class SettingsRepository:
@@ -51,6 +76,7 @@ class SettingsRepository:
         value = self.get_value(key)
         return int(value) if value else default
 
+    @db_retry
     def set(self, key: str, value: str, description: str = None) -> Settings:
         """Set or update setting."""
         setting = self.get(key)
@@ -76,6 +102,7 @@ class PositionRepository:
     def __init__(self, session: Session):
         self.session = session
 
+    @db_retry
     def create(
         self,
         symbol: str,
@@ -124,6 +151,7 @@ class PositionRepository:
         """Get all open positions."""
         return self.session.query(Position).filter_by(status="open").all()
 
+    @db_retry
     def update_current_price(self, position_id: int, current_price: float):
         """Update current price of position."""
         position = self.get(position_id)
@@ -131,6 +159,7 @@ class PositionRepository:
             position.current_price = current_price
             self.session.commit()
 
+    @db_retry
     def close(
         self, position_id: int, exit_price: float, close_reason: str = "take_profit", exit_order_id: Optional[str] = None
     ) -> Position:
@@ -379,6 +408,7 @@ class MarketSignalRepository:
     def __init__(self, session: Session):
         self.session = session
 
+    @db_retry
     def create(
         self,
         symbol: str,
@@ -407,6 +437,7 @@ class MarketSignalRepository:
         self.session.commit()
         return signal
 
+    @db_retry
     def mark_action_taken(self, signal_id: int):
         """Mark signal as action taken."""
         signal = self.session.query(MarketSignal).filter_by(id=signal_id).first()
@@ -418,6 +449,7 @@ class MarketSignalRepository:
         """Get recent signals."""
         return self.session.query(MarketSignal).order_by(desc(MarketSignal.created_at)).limit(limit).all()
 
+    @db_retry
     def cleanup_old_signals(self, retention_days: int = 30) -> int:
         """Delete signals older than retention period."""
         cutoff = datetime.utcnow() - timedelta(days=retention_days)
@@ -442,6 +474,7 @@ class BotStatusRepository:
             self.session.commit()
         return status
 
+    @db_retry
     def update_scan_time(self):
         """Update last scan time."""
         status = self.get()
@@ -449,6 +482,7 @@ class BotStatusRepository:
         status.updated_at = datetime.utcnow()
         self.session.commit()
 
+    @db_retry
     def update_monitor_time(self):
         """Update last monitor time."""
         status = self.get()
@@ -456,6 +490,7 @@ class BotStatusRepository:
         status.updated_at = datetime.utcnow()
         self.session.commit()
 
+    @db_retry
     def set_active(self, is_active: bool):
         """Set bot active status."""
         status = self.get()
@@ -463,6 +498,7 @@ class BotStatusRepository:
         status.updated_at = datetime.utcnow()
         self.session.commit()
 
+    @db_retry
     def set_paused(self, is_paused: bool):
         """Set bot paused status."""
         status = self.get()
@@ -470,6 +506,7 @@ class BotStatusRepository:
         status.updated_at = datetime.utcnow()
         self.session.commit()
 
+    @db_retry
     def increment_opened(self):
         """Increment total positions opened."""
         status = self.get()
@@ -477,6 +514,7 @@ class BotStatusRepository:
         status.updated_at = datetime.utcnow()
         self.session.commit()
 
+    @db_retry
     def increment_closed(self, pnl: float):
         """Increment total positions closed and update total P&L."""
         status = self.get()

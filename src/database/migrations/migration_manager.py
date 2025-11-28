@@ -165,8 +165,8 @@ class MigrationManager:
                     (version, name, self.calculate_checksum(file_path)),
                 )
                 conn.commit()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to record migration failure: {e}")
 
             return False
 

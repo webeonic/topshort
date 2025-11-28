@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from datetime import datetime, timedelta
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, List, Optional
 
 import ccxt
@@ -10,6 +10,65 @@ from pybreaker import CircuitBreaker
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
+
+
+class InvalidInputError(ValueError):
+    """Raised when input validation fails for trading operations."""
+
+    pass
+
+
+def _validate_symbol(symbol: str) -> None:
+    """Validate trading symbol format."""
+    if not symbol or not isinstance(symbol, str):
+        raise InvalidInputError("symbol must be a non-empty string")
+    if len(symbol) > 50:
+        raise InvalidInputError("symbol too long")
+
+
+def _validate_quantity(quantity: float) -> None:
+    """Validate trading quantity."""
+    if not isinstance(quantity, (int, float)):
+        raise InvalidInputError("quantity must be a number")
+    if quantity <= 0:
+        raise InvalidInputError("quantity must be positive")
+
+
+def _validate_price(price: float) -> None:
+    """Validate limit order price."""
+    if not isinstance(price, (int, float)):
+        raise InvalidInputError("price must be a number")
+    if price <= 0:
+        raise InvalidInputError("price must be positive")
+
+
+def _validate_side(side: str) -> None:
+    """Validate order side."""
+    if side not in ("buy", "sell"):
+        raise InvalidInputError("side must be 'buy' or 'sell'")
+
+
+def _validate_leverage(leverage: int) -> None:
+    """Validate leverage value."""
+    if not isinstance(leverage, int):
+        raise InvalidInputError("leverage must be an integer")
+    if leverage < 1 or leverage > 125:
+        raise InvalidInputError("leverage must be between 1 and 125")
+
+
+def _validate_margin(margin_usdt: float) -> None:
+    """Validate margin amount."""
+    if not isinstance(margin_usdt, (int, float)):
+        raise InvalidInputError("margin_usdt must be a number")
+    if margin_usdt <= 0:
+        raise InvalidInputError("margin_usdt must be positive")
+
+
+def _validate_position_side(position_side: Optional[str]) -> None:
+    """Validate position side for hedge mode."""
+    if position_side is not None and position_side not in ("LONG", "SHORT"):
+        raise InvalidInputError("position_side must be 'LONG', 'SHORT', or None")
+
 
 # Circuit breaker configuration
 api_circuit_breaker = CircuitBreaker(fail_max=5, reset_timeout=60, name="binance_api")
@@ -204,6 +263,8 @@ class BinanceClient:
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Set leverage for a symbol."""
+        _validate_symbol(symbol)
+        _validate_leverage(leverage)
         try:
             market = self.exchange.market(symbol)
             response = self.exchange.fapiPrivatePostLeverage(
@@ -229,6 +290,10 @@ class BinanceClient:
             quantity: Amount in base currency
             position_side: 'LONG' or 'SHORT' (required in hedge mode)
         """
+        _validate_symbol(symbol)
+        _validate_side(side)
+        _validate_quantity(quantity)
+        _validate_position_side(position_side)
         try:
             params = {}
             if position_side:
@@ -262,6 +327,11 @@ class BinanceClient:
             price: Limit price
             position_side: 'LONG' or 'SHORT' (required in hedge mode)
         """
+        _validate_symbol(symbol)
+        _validate_side(side)
+        _validate_quantity(quantity)
+        _validate_price(price)
+        _validate_position_side(position_side)
         try:
             params = {}
             if position_side:
@@ -286,6 +356,9 @@ class BinanceClient:
 
         Returns: Order info or None
         """
+        _validate_symbol(symbol)
+        _validate_margin(margin_usdt)
+        _validate_leverage(leverage)
         try:
             # Set leverage first
             if not self.set_leverage(symbol, leverage):
@@ -298,16 +371,18 @@ class BinanceClient:
 
             current_price = ticker["last"]
 
-            # Calculate quantity based on margin and leverage
+            # Calculate quantity using Decimal for precision
             # Notional value = margin * leverage
             # Quantity = notional value / price
-            notional_value = margin_usdt * leverage
-            quantity = notional_value / current_price
+            margin_dec = Decimal(str(margin_usdt))
+            leverage_dec = Decimal(str(leverage))
+            price_dec = Decimal(str(current_price))
 
-            # Round quantity to appropriate precision
-            market = self.exchange.market(symbol)
-            precision = market["precision"]["amount"]
-            quantity = self.exchange.amount_to_precision(symbol, quantity)
+            notional_value = margin_dec * leverage_dec
+            quantity_dec = notional_value / price_dec
+
+            # Round quantity to appropriate precision using CCXT
+            quantity = self.exchange.amount_to_precision(symbol, float(quantity_dec))
 
             logger.info(
                 f"Opening short position: {symbol}, "
@@ -327,6 +402,9 @@ class BinanceClient:
 
     def open_long_position(self, symbol: str, margin_usdt: float, leverage: int) -> Optional[Dict]:
         """Open a long position using market order."""
+        _validate_symbol(symbol)
+        _validate_margin(margin_usdt)
+        _validate_leverage(leverage)
         try:
             if not self.set_leverage(symbol, leverage):
                 return None
@@ -336,9 +414,15 @@ class BinanceClient:
                 return None
 
             current_price = ticker["last"]
-            notional_value = margin_usdt * leverage
-            quantity = notional_value / current_price
-            quantity = self.exchange.amount_to_precision(symbol, quantity)
+
+            # Calculate quantity using Decimal for precision
+            margin_dec = Decimal(str(margin_usdt))
+            leverage_dec = Decimal(str(leverage))
+            price_dec = Decimal(str(current_price))
+
+            notional_value = margin_dec * leverage_dec
+            quantity_dec = notional_value / price_dec
+            quantity = self.exchange.amount_to_precision(symbol, float(quantity_dec))
 
             logger.info(
                 f"Opening long position: {symbol}, "
@@ -361,6 +445,8 @@ class BinanceClient:
 
         Returns: Order info or None
         """
+        _validate_symbol(symbol)
+        _validate_quantity(quantity)
         try:
             # Create buy market order to close short (with SHORT position side for hedge mode)
             order = self.create_market_order(symbol, "buy", quantity, position_side="SHORT")
@@ -373,6 +459,8 @@ class BinanceClient:
 
     def close_long_position(self, symbol: str, quantity: float) -> Optional[Dict]:
         """Close a long position."""
+        _validate_symbol(symbol)
+        _validate_quantity(quantity)
         try:
             order = self.create_market_order(symbol, "sell", quantity, position_side="LONG")
             if order and "error_code" not in order:
@@ -427,4 +515,23 @@ class BinanceClient:
             return funding_rate.get("fundingRate")
         except Exception as e:
             logger.error(f"Error fetching funding rate for {symbol}: {e}")
+            return None
+
+    def fetch_order(self, order_id: str, symbol: str) -> Optional[Dict]:
+        """Fetch order details from exchange.
+
+        Args:
+            order_id: Exchange order ID
+            symbol: Trading symbol
+
+        Returns:
+            Order info dict with status, filled, average price, etc.
+            Returns None if order not found or error occurs.
+        """
+        try:
+            _validate_symbol(symbol)
+            order = self.exchange.fetch_order(order_id, symbol)
+            return order
+        except Exception as e:
+            logger.error(f"Error fetching order {order_id} for {symbol}: {e}")
             return None
