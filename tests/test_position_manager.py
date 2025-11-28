@@ -223,7 +223,8 @@ class TestOpenPosition:
         assert result is not None
         assert result["direction"] == "long"
         assert result["take_profit_price"] == 2100.0
-        assert result["stop_loss_price"] == 1950.0
+        # Stop-loss is disabled - always returns None regardless of input
+        assert result["stop_loss_price"] is None
 
         mock_client.open_long_position.assert_called_once_with("ETHUSDT", 50.0, 5)
         mock_client.create_limit_order.assert_called_with(
@@ -233,7 +234,8 @@ class TestOpenPosition:
         position = db_session.query(Position).filter_by(symbol="ETHUSDT").first()
         assert position is not None
         assert position.side == "long"
-        assert position.stop_loss_price == 1950.0
+        # Stop-loss is disabled
+        assert position.stop_loss_price is None
 
     def test_open_position_recalculates_tp_from_strategy_reference(self, position_manager, mock_client):
         """TP should be recalculated from strategy reference entry when actual fill differs."""

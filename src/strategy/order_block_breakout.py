@@ -38,6 +38,9 @@ TIMEFRAME_WORKER_CAP = 16
 # Minimum TP distance as percentage of entry price to cover trading fees
 MIN_TP_PERCENT = 0.1  # 0.1% minimum to cover ~0.06% round-trip fees + buffer
 
+# Minimum Risk/Reward ratio required to open a position
+MIN_RR_RATIO = 2.0  # Only take trades where potential reward >= 2x risk
+
 
 class OrderBlockSignal(TypedDict, total=False):
     symbol: str
@@ -131,6 +134,13 @@ class OrderBlockBreakoutStrategy:
                     )
 
             rr = abs(targets[0] - entry_price) / abs(entry_price - stop_loss) if stop_loss != entry_price else 0
+
+            # Validate minimum Risk/Reward ratio
+            if rr < MIN_RR_RATIO:
+                return self._invalid(
+                    symbol,
+                    f"R/R too low ({rr:.2f} < {MIN_RR_RATIO} min) - insufficient reward for risk",
+                )
 
             confirmation = self._confirm_breakout(confirmation_df, direction, entry_price)
             if not confirmation:

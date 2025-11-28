@@ -668,3 +668,27 @@ class TestHashedCallbackResolution:
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
         assert "Confirmed: closeall" in message
+
+    @pytest.mark.asyncio
+    async def test_exact_match_stores_resolved_callback(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test that exact match handlers also store resolved callback in context.
+
+        This tests the fix for the issue where exact match handlers didn't store
+        _resolved_callback, causing handlers to receive hashed data instead of original.
+        """
+        # Register an exact match handler (not a pattern)
+        original_callback = "test_exact_" + "Z" * 100  # Long enough to be hashed
+        hashed = validate_callback_data(original_callback)
+
+        mock_update.callback_query.data = hashed
+
+        mock_handler = AsyncMock()
+        # Register as exact match (not pattern)
+        callback_handler.handlers[original_callback] = mock_handler
+
+        await callback_handler.handle_callback(mock_update, mock_context_with_user_data)
+
+        # Handler should be called
+        mock_handler.assert_called_once()
+        # Resolved callback should be stored in context (the fix we made)
+        assert mock_context_with_user_data.user_data.get("_resolved_callback") == original_callback

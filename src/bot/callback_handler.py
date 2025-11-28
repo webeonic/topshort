@@ -177,6 +177,8 @@ class CallbackHandler:
 
         # Find exact match handler
         if callback_data in self.handlers:
+            # Store resolved callback_data in context for handlers
+            context.user_data["_resolved_callback"] = callback_data
             handler = self.handlers[callback_data]
             await handler(update, context)
             return
