@@ -228,8 +228,8 @@ class TopShortBot:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 try:
                     loop.remove_signal_handler(sig)
-                except:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"Could not remove signal handler for {sig}: {e}")
 
 
 def main():

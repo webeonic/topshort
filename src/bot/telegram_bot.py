@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from telegram import Update
@@ -16,6 +17,11 @@ from .keyboard_init import init_keyboard_templates
 from .scan_queue import ScanQueueManager
 
 logger = logging.getLogger(__name__)
+
+# Rate limiting constants for Telegram API
+# Telegram allows ~30 messages per second, we use conservative limits
+RATE_LIMIT_MESSAGES = 20  # Max messages per window
+RATE_LIMIT_WINDOW_SECONDS = 1.0  # Window size in seconds
 
 
 class TelegramBot:
@@ -43,6 +49,10 @@ class TelegramBot:
         self.application: Optional[Application] = None
         self.chat_id = config.chat_id
         self._stop_event = asyncio.Event()
+
+        # Rate limiting state for send_message
+        self._message_timestamps: list[float] = []
+        self._rate_limit_lock = asyncio.Lock()
 
         # Initialize keyboard templates
         init_keyboard_templates(session)
@@ -90,11 +100,35 @@ class TelegramBot:
         await app.initialize()
         await app.start()
 
+    async def _wait_for_rate_limit(self) -> None:
+        """Wait if rate limit would be exceeded."""
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            # Remove timestamps outside the window
+            window_start = now - RATE_LIMIT_WINDOW_SECONDS
+            self._message_timestamps = [ts for ts in self._message_timestamps if ts > window_start]
+
+            # If at limit, wait until oldest timestamp exits window
+            if len(self._message_timestamps) >= RATE_LIMIT_MESSAGES:
+                oldest = self._message_timestamps[0]
+                wait_time = (oldest + RATE_LIMIT_WINDOW_SECONDS) - now
+                if wait_time > 0:
+                    logger.debug(f"Rate limit reached, waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                    # Clean up after waiting
+                    now = time.monotonic()
+                    window_start = now - RATE_LIMIT_WINDOW_SECONDS
+                    self._message_timestamps = [ts for ts in self._message_timestamps if ts > window_start]
+
+            # Record this message timestamp
+            self._message_timestamps.append(now)
+
     async def send_message(self, text: str, parse_mode: str = "Markdown"):
-        """Send message to configured chat."""
+        """Send message to configured chat with rate limiting."""
         try:
             app = self.application
             if app and self.chat_id:
+                await self._wait_for_rate_limit()
                 await app.bot.send_message(chat_id=self.chat_id, text=text, parse_mode=parse_mode)
                 logger.debug(f"Sent message to chat {self.chat_id}")
         except Exception as e:

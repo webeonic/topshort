@@ -19,7 +19,7 @@ def _build_jobs(order_block_enabled: bool = True, order_block_interval: int = 60
 
     telegram_bot = AsyncMock()
     config = SimpleNamespace(
-        scheduler=SimpleNamespace(scan_interval_minutes=60, monitor_interval_seconds=30),
+        scheduler=SimpleNamespace(scan_interval_minutes=60, monitor_interval_seconds=30, signal_retention_days=30),
         strategy_runtime=SimpleNamespace(order_block_cycle_interval_seconds=order_block_interval, order_block_top_pairs=50),
         order_block_strategy=SimpleNamespace(enabled=order_block_enabled),
     )
@@ -109,12 +109,14 @@ async def test_monitor_positions_job_sends_closed_notifications():
 @pytest.mark.asyncio
 async def test_cleanup_data_job_invokes_repository():
     """Cleanup job must invoke repository cleanup with default retention."""
-    jobs, _, _ = _build_jobs()
+    jobs, engine, _ = _build_jobs()
     jobs.signal_repo.cleanup_old_signals.return_value = 5
+    engine.cleanup_stale_locks = MagicMock(return_value=3)
 
     await jobs.cleanup_data_job()
 
     jobs.signal_repo.cleanup_old_signals.assert_called_once_with(retention_days=30)
+    engine.cleanup_stale_locks.assert_called_once()
 
 
 @pytest.mark.asyncio

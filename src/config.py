@@ -141,6 +141,7 @@ class SchedulerConfig:
 
     scan_interval_minutes: int
     monitor_interval_seconds: int
+    signal_retention_days: int  # Days to keep old market signals before cleanup
 
 
 @dataclass
@@ -212,6 +213,7 @@ def load_config() -> Config:
         scheduler=SchedulerConfig(
             scan_interval_minutes=int(os.getenv("SCAN_INTERVAL_MINUTES", "60")),
             monitor_interval_seconds=int(os.getenv("MONITOR_INTERVAL_SECONDS", "30")),
+            signal_retention_days=int(os.getenv("SIGNAL_RETENTION_DAYS", "30")),
         ),
         concurrency=ConcurrencyConfig(
             blocking_workers=int(os.getenv("ASYNC_BLOCKING_WORKERS", str(_default_blocking_workers()))),

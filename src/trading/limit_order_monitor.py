@@ -40,7 +40,7 @@ class LimitOrderMonitor:
             logger.debug("No pending take-profit orders to monitor")
             return []
 
-        logger.info(f"Monitoring {len(positions_with_pending_tp)} pending take-profit orders")
+        logger.debug(f"Monitoring {len(positions_with_pending_tp)} pending take-profit orders")
         closed_positions = []
 
         for position in positions_with_pending_tp:

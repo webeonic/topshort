@@ -61,8 +61,10 @@ class TradingEngine:
 
         # Thread safety - locks for preventing race conditions
         self._position_locks: Dict[str, threading.Lock] = {}
+        self._position_lock_last_used: Dict[str, float] = {}  # Track last usage time
         self._global_lock = threading.Lock()
         self._lock_timeout = 5.0  # seconds
+        self._lock_cleanup_threshold_seconds = 3600  # 1 hour - cleanup unused locks
         self._order_block_cycle_lock = threading.Lock()
         self._order_block_cycle_started_at: float | None = None
         self._order_block_cycle_last_duration: float = float(
@@ -86,7 +88,54 @@ class TradingEngine:
         with self._global_lock:
             if symbol not in self._position_locks:
                 self._position_locks[symbol] = threading.Lock()
+            self._position_lock_last_used[symbol] = time.time()
             return self._position_locks[symbol]
+
+    def cleanup_stale_locks(self) -> int:
+        """Remove symbol locks that haven't been used recently.
+
+        This prevents memory leaks from accumulating locks for symbols
+        that are no longer actively traded.
+
+        Returns: Number of locks removed
+        """
+        with self._global_lock:
+            current_time = time.time()
+            threshold = self._lock_cleanup_threshold_seconds
+            stale_symbols = []
+
+            for symbol, last_used in self._position_lock_last_used.items():
+                if current_time - last_used > threshold:
+                    # Only remove if lock is not currently held
+                    lock = self._position_locks.get(symbol)
+                    if lock and not lock.locked():
+                        stale_symbols.append(symbol)
+
+            for symbol in stale_symbols:
+                del self._position_locks[symbol]
+                del self._position_lock_last_used[symbol]
+
+            if stale_symbols:
+                logger.info(f"Cleaned up {len(stale_symbols)} stale symbol locks")
+
+            return len(stale_symbols)
+
+    def get_lock_stats(self) -> Dict[str, Any]:
+        """Get statistics about symbol locks for monitoring.
+
+        Returns: Dict with lock statistics
+        """
+        with self._global_lock:
+            current_time = time.time()
+            active_count = sum(1 for lock in self._position_locks.values() if lock.locked())
+            ages = [current_time - t for t in self._position_lock_last_used.values()]
+
+            return {
+                "total_locks": len(self._position_locks),
+                "active_locks": active_count,
+                "oldest_lock_age_seconds": max(ages) if ages else 0,
+                "avg_lock_age_seconds": sum(ages) / len(ages) if ages else 0,
+            }
 
     def _get_yield_callback(self):
         loop = self._async_loop
@@ -440,6 +489,9 @@ class TradingEngine:
         except Exception as e:
             logger.error(f"Error completing scan progress: {e}")
 
+        # Check for critical errors that need notification
+        critical_error = self.position_manager.get_and_clear_critical_error()
+
         return {
             "success": True,
             "scan_id": scan_id,
@@ -448,6 +500,7 @@ class TradingEngine:
             "signals": signals[:5],  # Return top 5 signals
             "opened_positions": positions_opened,
             "strategy_mode": strategy_mode,
+            "critical_error": critical_error,
         }
 
     def monitor_and_close(self) -> Dict:

@@ -3,6 +3,7 @@
 import logging
 import math
 import time
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,14 @@ class PositionManager:
         self.position_repo = PositionRepository(session)
         self.settings_repo = SettingsRepository(session)
         self.bot_status_repo = BotStatusRepository(session)
+        # Track critical errors for notification by upper layers
+        self._last_critical_error: Optional[Dict[str, Any]] = None
+
+    def get_and_clear_critical_error(self) -> Optional[Dict[str, Any]]:
+        """Get and clear the last critical error for notification."""
+        error = self._last_critical_error
+        self._last_critical_error = None
+        return error
 
     def get_take_profit_pct(self) -> float:
         """Get take profit percentage from settings."""
@@ -197,8 +206,17 @@ class PositionManager:
                 logger.error(f"Database error, rolling back: {db_error}")
                 try:
                     self._close_orphaned_position(symbol, direction, quantity)
-                except Exception:
-                    logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
+                except Exception as orphan_error:
+                    logger.critical(f"CRITICAL: Failed to close orphaned position for {symbol}!")
+                    self._last_critical_error = {
+                        "type": "orphaned_position_cleanup_failed",
+                        "symbol": symbol,
+                        "direction": direction,
+                        "quantity": quantity,
+                        "original_error": str(db_error),
+                        "cleanup_error": str(orphan_error),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
                 return None
 
         except Exception as e:
@@ -208,8 +226,17 @@ class PositionManager:
                     quantity = float(order.get("filled", 0) or order.get("amount", 0))
                     if quantity > 0:
                         self._close_orphaned_position(symbol, direction, quantity)
-                except Exception:
-                    logger.error(f"CRITICAL: Failed to close orphaned position for {symbol}!")
+                except Exception as orphan_error:
+                    logger.critical(f"CRITICAL: Failed to close orphaned position for {symbol}!")
+                    self._last_critical_error = {
+                        "type": "orphaned_position_cleanup_failed",
+                        "symbol": symbol,
+                        "direction": direction,
+                        "quantity": quantity,
+                        "original_error": str(e),
+                        "cleanup_error": str(orphan_error),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
             return None
 
     def _close_orphaned_position(self, symbol: str, direction: str, quantity: float) -> None:
@@ -355,9 +382,23 @@ class PositionManager:
                     f"Position {position_id} ({position.symbol}) not found on exchange - "
                     f"likely already closed manually or by limit order. Syncing database..."
                 )
-                # Get current price for P&L calculation
-                ticker = self.client.get_ticker(position.symbol)
-                exit_price = ticker["last"] if ticker else position.current_price
+
+                # Try to get exit price from TP order if it was filled
+                exit_price = None
+                if position.take_profit_order_id:
+                    tp_order = self.client.fetch_order(position.take_profit_order_id, position.symbol)
+                    if tp_order:
+                        order_status = tp_order.get("status", "").lower()
+                        if order_status in ("closed", "filled"):
+                            exit_price = tp_order.get("average")
+                            if exit_price:
+                                logger.info(f"Got TP order fill price for {position.symbol}: {exit_price:.4f}")
+
+                # Fallback to current price if TP order price not available
+                if not exit_price:
+                    ticker = self.client.get_ticker(position.symbol)
+                    exit_price = ticker["last"] if ticker else position.current_price
+                    logger.debug(f"Using current market price for {position.symbol}: {exit_price}")
 
                 # Close position in database with reason indicating it was already closed
                 closed_position = self.position_repo.close(position_id, exit_price, f"{reason}_sync")
@@ -396,9 +437,23 @@ class PositionManager:
             # Check if order indicates position was already closed (error code -2022)
             if isinstance(order, dict) and order.get("error_code") == -2022:
                 logger.warning(f"Position {position_id} ({position.symbol}) already closed on exchange. Syncing database...")
-                # Get current price for P&L calculation
-                ticker = self.client.get_ticker(position.symbol)
-                exit_price = ticker["last"] if ticker else position.current_price
+
+                # Try to get exit price from TP order if it was filled
+                exit_price = None
+                if position.take_profit_order_id:
+                    tp_order = self.client.fetch_order(position.take_profit_order_id, position.symbol)
+                    if tp_order:
+                        order_status = tp_order.get("status", "").lower()
+                        if order_status in ("closed", "filled"):
+                            exit_price = tp_order.get("average")
+                            if exit_price:
+                                logger.info(f"Got TP order fill price for {position.symbol}: {exit_price:.4f}")
+
+                # Fallback to current price if TP order price not available
+                if not exit_price:
+                    ticker = self.client.get_ticker(position.symbol)
+                    exit_price = ticker["last"] if ticker else position.current_price
+                    logger.debug(f"Using current market price for {position.symbol}: {exit_price}")
 
                 # Close position in database
                 closed_position = self.position_repo.close(position_id, exit_price, f"{reason}_sync")
