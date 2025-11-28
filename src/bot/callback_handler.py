@@ -15,7 +15,7 @@ from ..database.repository import CallbackLogRepository, KeyboardStateRepository
 from ..trading.engine import TradingEngine
 from ..utils.async_executor import run_blocking
 from . import commands as bot_commands_module
-from .keyboard_builder import InlineTemplates, KeyboardBuilder
+from .keyboard_builder import InlineTemplates, KeyboardBuilder, callback_registry
 from .scan_queue import ScanQueueManager
 
 if TYPE_CHECKING:
@@ -156,11 +156,23 @@ class CallbackHandler:
         logger.debug(f"Registered pattern callback handler: {pattern}")
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Main callback query handler that routes to specific handlers."""
+        """Main callback query handler that routes to specific handlers.
+
+        This method resolves hashed callback_data back to original values
+        before routing, ensuring pattern matching and data extraction work
+        correctly even when callback_data was truncated due to Telegram's
+        64-byte limit.
+        """
         query = update.callback_query
         await query.answer()
 
-        callback_data = query.data
+        raw_callback_data = query.data
+        # Resolve hashed callback_data to original value if registered
+        callback_data = callback_registry.resolve(raw_callback_data)
+
+        if callback_data != raw_callback_data:
+            logger.debug(f"Resolved hashed callback: {raw_callback_data} -> {callback_data}")
+
         logger.info(f"Received callback: {callback_data} from user {query.from_user.id}")
 
         # Find exact match handler
@@ -174,6 +186,8 @@ class CallbackHandler:
             if pattern_key.startswith("pattern:"):
                 pattern = pattern_key.replace("pattern:", "")
                 if callback_data.startswith(pattern):
+                    # Store resolved callback_data in context for handlers
+                    context.user_data["_resolved_callback"] = callback_data
                     await handler(update, context)
                     return
 
@@ -241,7 +255,9 @@ class CallbackHandler:
     async def handle_scan_strategy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Execute manual scan for selected strategy."""
         query = update.callback_query
-        strategy_mode = query.data.replace("scan_strategy_", "", 1)
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        strategy_mode = callback_data.replace("scan_strategy_", "", 1)
         alias_map = {"pump_cooldown": "pc", "order_block": "ob"}
         label_map = {
             "pump_cooldown": "Pump & Cooldown",
@@ -264,14 +280,22 @@ class CallbackHandler:
     async def handle_position_select(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position selection from list - show action buttons."""
         query = update.callback_query
-        symbol = query.data.replace("pos_select_", "")
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        symbol = callback_data.replace("pos_select_", "")
 
         position = await run_blocking(self.engine.position_manager.get_position_by_symbol, symbol)
         if not position:
             await query.edit_message_text(f"❌ Позиция не найдена: {symbol}")
             return
 
-        pnl_emoji = "🟢" if position["unrealized_pnl"] > 0 else "🔴"
+        pnl = position["unrealized_pnl"]
+        if pnl > 0:
+            pnl_emoji = "🟢"
+        elif pnl < 0:
+            pnl_emoji = "🔴"
+        else:
+            pnl_emoji = "⚪"
         message = f"""
 📊 *{position['symbol']}*
 
@@ -292,18 +316,26 @@ class CallbackHandler:
 
         await query.edit_message_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
+    @log_callback(success=True)
     async def handle_position_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position details callback."""
         query = update.callback_query
-        # Extract symbol from callback_data: pos_details_BTCUSDT
-        symbol = query.data.replace("pos_details_", "")
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        symbol = callback_data.replace("pos_details_", "")
 
         position = await run_blocking(self.engine.position_manager.get_position_by_symbol, symbol)
         if not position:
             await query.edit_message_text(f"❌ Позиция не найдена: {symbol}")
             return
 
-        pnl_emoji = "🟢" if position["unrealized_pnl"] > 0 else "🔴"
+        pnl = position["unrealized_pnl"]
+        if pnl > 0:
+            pnl_emoji = "🟢"
+        elif pnl < 0:
+            pnl_emoji = "🔴"
+        else:
+            pnl_emoji = "⚪"
         message = f"""
 📊 *Детали позиции: {position['symbol']}*
 
@@ -328,6 +360,10 @@ class CallbackHandler:
     async def handle_position_refresh(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position refresh callback."""
         query = update.callback_query
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        # Store resolved data for handle_position_details call
+        context.user_data["_resolved_callback"] = callback_data.replace("pos_refresh_", "pos_details_")
 
         await query.answer("🔄 Refreshing position data...")
         # Trigger position update
@@ -340,7 +376,9 @@ class CallbackHandler:
     async def handle_position_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position close callback."""
         query = update.callback_query
-        symbol = query.data.replace("pos_close_", "")
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        symbol = callback_data.replace("pos_close_", "")
 
         await query.answer("Закрываю позицию...")
 
@@ -409,8 +447,10 @@ class CallbackHandler:
     async def handle_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle confirmation callback."""
         query = update.callback_query
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
         # Extract action: confirm_closeall_data
-        parts = query.data.split("_")
+        parts = callback_data.split("_")
         action = parts[1] if len(parts) > 1 else "unknown"
 
         await query.edit_message_text(f"✅ Confirmed: {action}")
@@ -425,7 +465,9 @@ class CallbackHandler:
     async def handle_setting_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle setting menu callback."""
         query = update.callback_query
-        setting_key = query.data.replace("setting_", "")
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        setting_key = callback_data.replace("setting_", "")
 
         message = f"""
 ⚙️ *Setting: {setting_key}*
@@ -441,7 +483,9 @@ Example: `/set margin_per_trade 150`
     async def handle_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle pagination callback."""
         query = update.callback_query
-        page_num = int(query.data.split("_")[1])
+        # Use resolved callback_data from context (handles hashed callbacks)
+        callback_data = context.user_data.get("_resolved_callback", query.data)
+        page_num = int(callback_data.split("_")[1])
 
         await query.answer(f"Loading page {page_num + 1}...")
         # Implementation depends on what's being paginated

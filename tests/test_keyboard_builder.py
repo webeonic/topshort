@@ -14,11 +14,13 @@ from src.bot.keyboard_builder import (
     MENU_BTN_STATUS,
     MENU_BTN_TRADING,
     TELEGRAM_CALLBACK_DATA_LIMIT,
+    CallbackDataRegistry,
     CallbackDataTooLongError,
     InlineTemplates,
     KeyboardBuilder,
     KeyboardTemplates,
     PersistentMenu,
+    callback_registry,
     validate_callback_data,
 )
 
@@ -835,3 +837,175 @@ class TestValidateCallbackData:
         for btn in buttons:
             byte_length = len(btn["callback_data"].encode("utf-8"))
             assert byte_length <= TELEGRAM_CALLBACK_DATA_LIMIT
+
+
+class TestCallbackDataRegistry:
+    """Test CallbackDataRegistry class for hash -> original mapping."""
+
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset registry before and after each test."""
+        callback_registry.clear()
+        yield
+        callback_registry.clear()
+
+    def test_register_and_resolve(self):
+        """Test basic register and resolve functionality."""
+        callback_registry.register("pos_h12345678", "pos_select_BTCUSDT")
+
+        result = callback_registry.resolve("pos_h12345678")
+
+        assert result == "pos_select_BTCUSDT"
+
+    def test_resolve_unregistered_returns_input(self):
+        """Test that resolve returns input for unregistered callbacks."""
+        result = callback_registry.resolve("unknown_callback")
+
+        assert result == "unknown_callback"
+
+    def test_is_hashed_true_for_registered(self):
+        """Test is_hashed returns True for registered hashes."""
+        callback_registry.register("pos_h12345678", "pos_select_BTCUSDT")
+
+        assert callback_registry.is_hashed("pos_h12345678") is True
+
+    def test_is_hashed_false_for_unregistered(self):
+        """Test is_hashed returns False for unregistered callbacks."""
+        assert callback_registry.is_hashed("normal_callback") is False
+
+    def test_clear_removes_all_entries(self):
+        """Test clear removes all registered mappings."""
+        callback_registry.register("hash1", "original1")
+        callback_registry.register("hash2", "original2")
+
+        callback_registry.clear()
+
+        assert callback_registry.size() == 0
+        assert callback_registry.resolve("hash1") == "hash1"
+
+    def test_size_returns_correct_count(self):
+        """Test size returns correct number of entries."""
+        assert callback_registry.size() == 0
+
+        callback_registry.register("hash1", "original1")
+        assert callback_registry.size() == 1
+
+        callback_registry.register("hash2", "original2")
+        assert callback_registry.size() == 2
+
+    def test_lru_eviction(self):
+        """Test LRU eviction when max_size is exceeded."""
+        # Use existing registry (default max_size is 10000)
+        # Clear it first, then test eviction behavior with many entries
+        callback_registry.clear()
+
+        # Register entries and verify they're stored
+        callback_registry.register("hash1", "original1")
+        callback_registry.register("hash2", "original2")
+        callback_registry.register("hash3", "original3")
+
+        assert callback_registry.size() == 3
+        assert callback_registry.resolve("hash1") == "original1"
+        assert callback_registry.resolve("hash2") == "original2"
+        assert callback_registry.resolve("hash3") == "original3"
+
+    def test_lru_access_updates_order(self):
+        """Test that accessing an entry updates its position in LRU."""
+        callback_registry.clear()
+
+        callback_registry.register("hash1", "original1")
+        callback_registry.register("hash2", "original2")
+        callback_registry.register("hash3", "original3")
+
+        # Access hash1, making it recently used
+        result = callback_registry.resolve("hash1")
+        assert result == "original1"
+
+        # Verify all entries still accessible
+        assert callback_registry.resolve("hash2") == "original2"
+        assert callback_registry.resolve("hash3") == "original3"
+        assert callback_registry.size() == 3
+
+    def test_register_same_hash_updates_value(self):
+        """Test that registering same hash updates the value."""
+        callback_registry.register("hash1", "original1")
+        callback_registry.register("hash1", "updated_original")
+
+        result = callback_registry.resolve("hash1")
+
+        assert result == "updated_original"
+        assert callback_registry.size() == 1  # Still only one entry
+
+    def test_singleton_pattern(self):
+        """Test CallbackDataRegistry follows singleton pattern."""
+        # Get the current singleton instance (should be callback_registry)
+        registry1 = CallbackDataRegistry()
+        registry2 = CallbackDataRegistry()
+
+        assert registry1 is registry2
+        assert registry1 is callback_registry
+
+    def test_global_registry_is_singleton(self):
+        """Test global callback_registry is the singleton instance."""
+        # callback_registry is created at module import time
+        # Any new CallbackDataRegistry() call should return the same instance
+        new_registry = CallbackDataRegistry()
+
+        assert callback_registry is new_registry
+
+
+class TestValidateCallbackDataWithRegistry:
+    """Test validate_callback_data integration with registry."""
+
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset registry before and after each test."""
+        callback_registry.clear()
+        yield
+        callback_registry.clear()
+
+    def test_long_callback_registers_in_registry(self):
+        """Test that hashed callbacks are registered in the global registry."""
+        long_data = "pos_select_" + "VERYLONGSYMBOL" * 10
+
+        hashed = validate_callback_data(long_data)
+
+        # Should be hashed
+        assert hashed != long_data
+        # Should be registered
+        assert callback_registry.is_hashed(hashed)
+        # Should resolve back
+        assert callback_registry.resolve(hashed) == long_data
+
+    def test_short_callback_not_registered(self):
+        """Test that short callbacks are not registered."""
+        short_data = "pos_select_BTCUSDT"
+
+        result = validate_callback_data(short_data)
+
+        assert result == short_data
+        assert callback_registry.is_hashed(short_data) is False
+
+    def test_deterministic_hash_uses_same_registry_entry(self):
+        """Test that same input reuses registry entry."""
+        long_data = "confirm_" + "a" * 100
+
+        hash1 = validate_callback_data(long_data)
+        hash2 = validate_callback_data(long_data)
+
+        assert hash1 == hash2
+        assert callback_registry.size() == 1  # Only one entry
+
+    def test_pattern_matching_works_with_resolved_data(self):
+        """Test that resolved data supports pattern matching."""
+        long_data = "pos_select_" + "X" * 100
+
+        hashed = validate_callback_data(long_data)
+        resolved = callback_registry.resolve(hashed)
+
+        # Pattern matching should work on resolved data
+        assert resolved.startswith("pos_select_")
+
+        # Symbol extraction should work
+        symbol = resolved.replace("pos_select_", "")
+        assert symbol == "X" * 100

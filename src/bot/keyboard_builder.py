@@ -7,7 +7,9 @@ This module provides two types of keyboards:
 
 import hashlib
 import logging
-from typing import Dict, List, Optional, Union
+import threading
+from collections import OrderedDict
+from typing import Dict, List, Optional, Tuple, Union
 
 from sqlalchemy.orm import Session
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -20,7 +22,7 @@ from ..database.repository import KeyboardButtonRepository, KeyboardStateReposit
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# CALLBACK DATA VALIDATION
+# CALLBACK DATA VALIDATION & REGISTRY
 # =============================================================================
 
 # Telegram Bot API limit for callback_data (in bytes)
@@ -33,6 +35,114 @@ class CallbackDataTooLongError(Exception):
     pass
 
 
+class CallbackDataRegistry:
+    """Thread-safe LRU cache registry for hashed callback data.
+
+    When callback_data exceeds Telegram's 64-byte limit, it gets hashed.
+    This registry stores the mapping from hash to original data, allowing
+    callback handlers to recover the original callback_data for pattern
+    matching and data extraction.
+
+    The registry uses an LRU (Least Recently Used) eviction policy to
+    prevent unbounded memory growth.
+
+    Usage:
+        # Automatic registration during validation
+        validated = validate_callback_data("pos_select_VERYLONGSYMBOL...")
+        # -> "pos_h12345678" (registered automatically)
+
+        # Later, in callback handler
+        original = callback_registry.resolve(validated)
+        # -> "pos_select_VERYLONGSYMBOL..."
+    """
+
+    _instance: Optional["CallbackDataRegistry"] = None
+    _lock = threading.Lock()
+
+    # Instance attributes (set in __new__ for singleton)
+    _max_size: int
+    _cache: OrderedDict[str, str]
+    _cache_lock: threading.Lock
+
+    def __new__(cls, max_size: int = 10000) -> "CallbackDataRegistry":
+        """Singleton pattern for global registry access."""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    instance = super().__new__(cls)
+                    instance._max_size = max_size
+                    instance._cache = OrderedDict()
+                    instance._cache_lock = threading.Lock()
+                    cls._instance = instance
+        return cls._instance
+
+    def register(self, hashed: str, original: str) -> None:
+        """Register a hash -> original callback_data mapping.
+
+        Args:
+            hashed: The hashed/shortened callback_data
+            original: The original full callback_data
+        """
+        with self._cache_lock:
+            # Update value and move to end (LRU update)
+            self._cache[hashed] = original
+            self._cache.move_to_end(hashed)
+            # Evict oldest entries if over capacity
+            while len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
+
+    def resolve(self, callback_data: str) -> str:
+        """Resolve callback_data to its original value.
+
+        If the callback_data was hashed and registered, returns the original.
+        Otherwise, returns the input unchanged.
+
+        Args:
+            callback_data: The callback_data to resolve
+
+        Returns:
+            Original callback_data if found in registry, otherwise input unchanged
+        """
+        with self._cache_lock:
+            if callback_data in self._cache:
+                # Move to end (LRU access)
+                self._cache.move_to_end(callback_data)
+                return self._cache[callback_data]
+        return callback_data
+
+    def is_hashed(self, callback_data: str) -> bool:
+        """Check if callback_data is a registered hash.
+
+        Args:
+            callback_data: The callback_data to check
+
+        Returns:
+            True if this is a registered hashed callback
+        """
+        with self._cache_lock:
+            return callback_data in self._cache
+
+    def clear(self) -> None:
+        """Clear all registered mappings. Primarily for testing."""
+        with self._cache_lock:
+            self._cache.clear()
+
+    def size(self) -> int:
+        """Return current number of registered mappings."""
+        with self._cache_lock:
+            return len(self._cache)
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Reset the singleton instance. Primarily for testing."""
+        with cls._lock:
+            cls._instance = None
+
+
+# Global registry instance
+callback_registry = CallbackDataRegistry()
+
+
 def validate_callback_data(callback_data: str, raise_on_overflow: bool = False) -> str:
     """Validate and safely truncate callback_data to fit Telegram's 64-byte limit.
 
@@ -41,6 +151,9 @@ def validate_callback_data(callback_data: str, raise_on_overflow: bool = False) 
     - Returns the original string if it fits
     - Generates a shortened version using SHA256 hash if it exceeds the limit
     - Raises an exception if raise_on_overflow=True
+
+    When data is hashed, the mapping is automatically registered in the
+    global callback_registry so handlers can recover the original data.
 
     Args:
         callback_data: Original callback data string
@@ -55,7 +168,7 @@ def validate_callback_data(callback_data: str, raise_on_overflow: bool = False) 
     Example:
         >>> validate_callback_data("short_data")
         'short_data'
-        >>> validate_callback_data("very_long_" * 10)  # Will be hashed
+        >>> validate_callback_data("very_long_" * 10)  # Will be hashed and registered
         'very_h1a2b3c4'
     """
     if not callback_data:
@@ -88,6 +201,9 @@ def validate_callback_data(callback_data: str, raise_on_overflow: bool = False) 
     if new_byte_length > TELEGRAM_CALLBACK_DATA_LIMIT:
         # Fallback: just use hash
         new_callback = f"h{hash_suffix}"
+
+    # Register the mapping so handlers can recover original data
+    callback_registry.register(new_callback, callback_data)
 
     logger.warning(
         f"callback_data truncated: '{callback_data[:40]}...' ({byte_length}B) -> "
