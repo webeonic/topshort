@@ -134,6 +134,7 @@ class TradeHistory(Base):
 
     # Source tracking
     source = Column(String(30), default="bot_auto")  # 'bot_auto', 'manual', 'external_system'
+    strategy = Column(String(50), nullable=True)  # 'pump_cooldown', 'order_block', etc.
 
     take_profit_price = Column(Float, nullable=True)
     stop_loss_price = Column(Float, nullable=True)
@@ -152,7 +153,7 @@ class TradeHistory(Base):
     notes = Column(Text, nullable=True)
 
     def __repr__(self):
-        return f"<TradeHistory(symbol='{self.symbol}', source='{self.source}', pnl={self.pnl}, pnl_pct={self.pnl_pct}%)>"
+        return f"<TradeHistory(symbol='{self.symbol}', strategy='{self.strategy}', pnl={self.pnl}, pnl_pct={self.pnl_pct}%)>"
 
 
 class MarketSignal(Base):
