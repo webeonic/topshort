@@ -132,12 +132,14 @@ class PositionManager:
                 strategy_target=take_profit_price,
                 reference_entry=reference_entry,
             )
-            final_sl_price = self._determine_stop_loss_price(
-                direction=direction,
-                actual_entry=entry_price,
-                strategy_stop=stop_loss_price,
-                reference_entry=reference_entry,
-            )
+            # Stop-loss disabled - we rely only on take-profit
+            # final_sl_price = self._determine_stop_loss_price(
+            #     direction=direction,
+            #     actual_entry=entry_price,
+            #     strategy_stop=stop_loss_price,
+            #     reference_entry=reference_entry,
+            # )
+            final_sl_price = None
 
             self.session.begin_nested()
 
@@ -570,16 +572,10 @@ class PositionManager:
                 self.position_repo.update_current_price(position.id, current_price)
 
                 tp_reached = False
-                sl_reached = False
-                stop_loss_price = position.stop_loss_price
                 if position.side == "short":
                     tp_reached = current_price <= position.take_profit_price
-                    if stop_loss_price is not None and stop_loss_price > 0:
-                        sl_reached = current_price >= stop_loss_price
                 else:
                     tp_reached = current_price >= position.take_profit_price
-                    if stop_loss_price is not None and stop_loss_price > 0:
-                        sl_reached = current_price <= stop_loss_price
 
                 if tp_reached:
                     logger.info(
@@ -591,14 +587,17 @@ class PositionManager:
                         closed.append(close_info)
                         continue
 
-                if sl_reached:
-                    logger.info(
-                        f"Stop loss triggered for {position.symbol}: "
-                        f"Current={current_price:.4f}, SL={position.stop_loss_price:.4f}"
-                    )
-                    close_info = self.close_position(position.id, "stop_loss")
-                    if close_info:
-                        closed.append(close_info)
+                # Stop-loss monitoring disabled - positions close only on TP or manually
+                # stop_loss_price = position.stop_loss_price
+                # if position.side == "short":
+                #     if stop_loss_price is not None and stop_loss_price > 0:
+                #         sl_reached = current_price >= stop_loss_price
+                # else:
+                #     if stop_loss_price is not None and stop_loss_price > 0:
+                #         sl_reached = current_price <= stop_loss_price
+                # if sl_reached:
+                #     logger.info(...)
+                #     close_info = self.close_position(position.id, "stop_loss")
 
             except Exception as e:
                 logger.error(f"Error monitoring position {position.id} ({position.symbol}): {e}")

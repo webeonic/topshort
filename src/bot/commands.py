@@ -21,7 +21,19 @@ from ..database.repository import (
 )
 from ..trading.engine import TradingEngine
 from ..utils.async_executor import run_blocking
-from .keyboard_builder import KeyboardBuilder, KeyboardTemplates
+from .keyboard_builder import (
+    MENU_BTN_HELP,
+    MENU_BTN_HISTORY,
+    MENU_BTN_POSITIONS,
+    MENU_BTN_SCAN,
+    MENU_BTN_SETTINGS,
+    MENU_BTN_STATUS,
+    MENU_BTN_TRADING,
+    InlineTemplates,
+    KeyboardBuilder,
+    KeyboardTemplates,
+    PersistentMenu,
+)
 from .scan_queue import ScanQueueFullError, ScanQueueItem, ScanQueueManager
 
 logger = logging.getLogger(__name__)
@@ -146,38 +158,34 @@ class BotCommands:
         return strategy_mode
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command."""
+        """Handle /start command.
+
+        Shows welcome message and activates persistent menu keyboard.
+        """
         welcome_message = """
 🤖 *TopShort Trading Bot*
 
-Automatic trading bot for short positions on Binance Futures.
+Автоматический торговый бот для шорт-позиций на Binance Futures.
 
-*Available commands:*
-/menu - Show interactive menu
-/status - Current status and open positions
-/positions - List all open positions
-/history - History of last 10 trades
-/stats - Trading statistics
-/settings - Current settings
-/set - Change settings
-/pause - Pause trading
-/resume - Resume trading
-/scan - Start market scan manually (`/scan pc` или `/scan ob`)
-/pairs - Show top pairs universe
-/close - Close position by symbol
-/closeall - Close all positions
-/help - Help with commands
+Используйте кнопки меню внизу экрана для навигации.
 
-The bot automatically scans the market every hour and opens short positions on cooling pairs after pump.
+*Доступные команды:*
+/status - Текущий статус
+/positions - Открытые позиции
+/history - История сделок
+/stats - Статистика
+/settings - Настройки
+/scan - Запустить скан (`/scan pc` или `/scan ob`)
+/pairs - Показать пары
+/close - Закрыть позицию
+/closeall - Закрыть все позиции
 
-💡 *Tip:* Use /menu for interactive buttons!
+Бот автоматически сканирует рынок каждый час и открывает шорт-позиции на остывающих парах после пампа.
 """
-        # Try to use keyboard from template, fallback to simple message
-        keyboard = self.keyboard_builder.build_inline_keyboard_from_template("main_menu")
-        if keyboard:
-            await update.effective_message.reply_text(welcome_message, parse_mode="Markdown", reply_markup=keyboard)
-        else:
-            await update.effective_message.reply_text(welcome_message, parse_mode="Markdown")
+        # Send with persistent reply keyboard
+        await update.effective_message.reply_text(
+            welcome_message, parse_mode="Markdown", reply_markup=PersistentMenu.main_menu()
+        )
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
@@ -222,38 +230,44 @@ The bot automatically scans the market every hour and opens short positions on c
         return labels.get(strategy, strategy)
 
     async def positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /positions command."""
+        """Handle /positions command.
+
+        Shows list of open positions with inline action buttons.
+        """
         try:
             positions = await self._run_blocking(self.engine.position_manager.get_all_open_positions)
 
             if not positions:
-                await update.effective_message.reply_text("📭 No open positions")
+                await update.effective_message.reply_text("📭 Нет открытых позиций")
                 return
 
-            message = f"📊 *Open positions ({len(positions)}):*\n\n"
+            message = f"📊 *Открытые позиции ({len(positions)}):*\n\n"
 
             for pos in positions:
                 pnl_emoji = "🟢" if pos["unrealized_pnl"] > 0 else "🔴"
                 strategy = self._format_strategy_label(pos.get("strategy"))
-                message += f"""
-*{pos['symbol']}*
-🧭 Side: {pos.get('side', 'short').upper()}
-🎲 Strategy: {strategy}
-💰 Entry: {pos['entry_price']:.4f}
-📈 Current: {pos['current_price']:.4f}
+                message += f"""*{pos['symbol']}*
+🧭 Сторона: {pos.get('side', 'short').upper()}
+🎲 Стратегия: {strategy}
+💰 Вход: {pos['entry_price']:.4f}
+📈 Текущая: {pos['current_price']:.4f}
 🎯 TP: {pos['take_profit_price']:.4f}
-🛑 SL: {pos.get('stop_loss_price', 0) or '—'}
-📊 Leverage: {pos['leverage']}x
-💵 Margin: {pos['margin']:.2f} USDT
+📊 Плечо: {pos['leverage']}x
+💵 Маржа: {pos['margin']:.2f} USDT
 {pnl_emoji} P&L: {pos['unrealized_pnl']:.2f} USDT ({pos['unrealized_pnl_pct']:.2f}%)
 
 """
-
-            await update.effective_message.reply_text(message, parse_mode="Markdown")
+            # Build inline keyboard with position buttons
+            buttons_data = InlineTemplates.positions_list(positions)
+            if buttons_data:
+                keyboard = self.keyboard_builder.create_inline_keyboard(buttons_data, n_cols=2)
+                await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+            else:
+                await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
             logger.error(f"Error in positions command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
 
     async def history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /history command."""
@@ -358,22 +372,29 @@ The bot automatically scans the market every hour and opens short positions on c
             await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /settings command."""
+        """Handle /settings command.
+
+        Shows current settings with inline buttons for quick editing.
+        """
         try:
             all_settings = await self._run_blocking(self.settings_repo.get_all)
 
-            message = "⚙️ *Current settings:*\n\n"
+            message = "⚙️ *Текущие настройки:*\n\n"
 
             for setting in all_settings:
                 message += f"  *{setting.key}*: {setting.value}\n"
 
-            message += "\n💡 To change: /set <key> <value>"
+            message += "\n💡 Нажмите кнопку для изменения или:\n`/set <ключ> <значение>`"
 
-            await update.effective_message.reply_text(message, parse_mode="Markdown")
+            # Build inline keyboard with settings buttons
+            buttons_data = InlineTemplates.settings_menu()
+            keyboard = self.keyboard_builder.create_inline_keyboard(buttons_data, n_cols=2)
+
+            await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
         except Exception as e:
             logger.error(f"Error in settings command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
 
     @require_auth
     async def set_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -808,30 +829,53 @@ The bot automatically scans the market every hour and opens short positions on c
             await update.effective_message.reply_text(f"❌ Error: {e}")
 
     async def show_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /menu command - show main interactive menu."""
+        """Handle /menu command - show trading controls menu.
+
+        This shows inline buttons for trading actions.
+        The persistent menu is always available at the bottom.
+        """
         try:
-            # Build main menu keyboard from template
-            keyboard = self.keyboard_builder.build_inline_keyboard_from_template("main_menu")
+            # Get current bot status to show appropriate buttons
+            bot_status = await self._run_blocking(self.bot_status_repo.get)
+            is_paused = bot_status.is_paused if bot_status else False
 
-            if keyboard:
-                message = """
-🎮 *Main Menu*
+            # Build trading controls inline keyboard
+            buttons_data = InlineTemplates.trading_controls(is_paused=is_paused)
+            keyboard = self.keyboard_builder.create_inline_keyboard(buttons_data, n_cols=2)
 
-Choose an action from the buttons below:
+            status_emoji = "⏸️ Пауза" if is_paused else "🟢 Активен"
+            message = f"""
+🎮 *Управление торговлей*
+
+Статус: {status_emoji}
+
+Выберите действие:
 """
-                await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
-            else:
-                # Fallback: create keyboard programmatically
-                buttons_data = KeyboardTemplates.main_menu()
-                keyboard = self.keyboard_builder.create_inline_keyboard(buttons_data, n_cols=2)
-
-                message = """
-🎮 *Main Menu*
-
-Choose an action from the buttons below:
-"""
-                await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+            await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
         except Exception as e:
             logger.error(f"Error in show_menu command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
+
+    async def show_scan_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show scan strategy selection menu.
+
+        Displays inline buttons for selecting scan strategy.
+        """
+        try:
+            # Check if Order Block strategy is enabled
+            order_block_enabled = getattr(getattr(self.engine.config, "order_block_strategy", None), "enabled", False)
+
+            buttons_data = InlineTemplates.scan_strategy_selection(order_block_enabled=order_block_enabled)
+            keyboard = self.keyboard_builder.create_inline_keyboard(buttons_data, n_cols=1)
+
+            message = """
+🔍 *Выбор стратегии сканирования*
+
+Выберите стратегию для запуска:
+"""
+            await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
+
+        except Exception as e:
+            logger.error(f"Error in show_scan_menu command: {e}")
+            await update.effective_message.reply_text(f"❌ Ошибка: {e}")

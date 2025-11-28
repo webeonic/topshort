@@ -6,6 +6,7 @@ import pytest
 from telegram import CallbackQuery, Message, Update, User
 
 from src.bot.callback_handler import CallbackHandler, log_callback
+from src.bot.keyboard_builder import callback_registry, validate_callback_data
 
 
 @pytest.fixture
@@ -95,6 +96,9 @@ def mock_context():
     """Create mock context."""
     context = MagicMock()
     context.args = []
+    # Configure user_data.get to return default value (second argument)
+    context.user_data = MagicMock()
+    context.user_data.get.side_effect = lambda key, default=None: default
     return context
 
 
@@ -314,7 +318,8 @@ class TestPositionCallbacks:
         callback_handler.engine.position_manager.get_position_by_symbol.assert_called_once_with("BTCUSDT")
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Position Details" in message
+        # Russian labels now
+        assert "Детали позиции" in message
         assert "BTCUSDT" in message
 
     @pytest.mark.asyncio
@@ -327,7 +332,8 @@ class TestPositionCallbacks:
 
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Position not found" in message
+        # Russian labels now
+        assert "Позиция не найдена" in message
 
     @pytest.mark.asyncio
     async def test_handle_position_refresh(self, callback_handler, mock_update, mock_context):
@@ -349,7 +355,8 @@ class TestPositionCallbacks:
         callback_handler.engine.position_manager.close_position_by_symbol.assert_called_once_with("BTCUSDT", "manual")
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Position Closed" in message
+        # Russian labels now
+        assert "Позиция закрыта" in message
 
     @pytest.mark.asyncio
     async def test_handle_position_close_failed(self, callback_handler, mock_update, mock_context):
@@ -360,7 +367,8 @@ class TestPositionCallbacks:
         await callback_handler.handle_position_close(mock_update, mock_context)
 
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Failed to close position" in message
+        # Russian labels now
+        assert "Не удалось закрыть позицию" in message
 
 
 class TestTradingControlCallbacks:
@@ -535,3 +543,152 @@ class TestLogCallbackDecorator:
             call_kwargs = mock_log.call_args[1]
             assert call_kwargs["success"] is False
             assert "Test error" in call_kwargs["error_message"]
+
+
+class TestHashedCallbackResolution:
+    """Test resolution of hashed callback data."""
+
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset registry before and after each test."""
+        callback_registry.clear()
+        yield
+        callback_registry.clear()
+
+    @pytest.fixture
+    def mock_context_with_user_data(self):
+        """Create mock context with working user_data dict."""
+        context = MagicMock()
+        context.args = []
+        # Use real dict for user_data
+        context.user_data = {}
+        return context
+
+    @pytest.mark.asyncio
+    async def test_handle_callback_resolves_hashed_data(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test that handle_callback resolves hashed callback_data."""
+        # Create a long callback that will be hashed
+        original_callback = "pos_select_" + "X" * 100
+        hashed = validate_callback_data(original_callback)
+
+        # Set the hashed value as the callback_query.data
+        mock_update.callback_query.data = hashed
+
+        # Should resolve and route correctly
+        mock_handler = AsyncMock()
+        callback_handler.register_pattern("pos_select_", mock_handler)
+
+        await callback_handler.handle_callback(mock_update, mock_context_with_user_data)
+
+        # Handler should be called
+        mock_handler.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_position_select_with_hashed_symbol(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test position select correctly extracts symbol from hashed callback."""
+        # Create a long symbol that will be hashed
+        long_symbol = "VERYLONGSYMBOLNAME" * 5
+        original_callback = f"pos_select_{long_symbol}"
+        hashed = validate_callback_data(original_callback)
+
+        # Set up the context with resolved callback
+        mock_context_with_user_data.user_data["_resolved_callback"] = original_callback
+        mock_update.callback_query.data = hashed
+
+        callback_handler.engine.position_manager.get_position_by_symbol.return_value = None
+
+        await callback_handler.handle_position_select(mock_update, mock_context_with_user_data)
+
+        # Should call get_position_by_symbol with the FULL original symbol
+        callback_handler.engine.position_manager.get_position_by_symbol.assert_called_once_with(long_symbol)
+
+    @pytest.mark.asyncio
+    async def test_position_close_with_hashed_symbol(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test position close correctly extracts symbol from hashed callback."""
+        long_symbol = "LONGSYMBOL" * 10
+        original_callback = f"pos_close_{long_symbol}"
+        hashed = validate_callback_data(original_callback)
+
+        mock_context_with_user_data.user_data["_resolved_callback"] = original_callback
+        mock_update.callback_query.data = hashed
+        callback_handler.engine.position_manager.close_position_by_symbol.return_value = None
+
+        await callback_handler.handle_position_close(mock_update, mock_context_with_user_data)
+
+        callback_handler.engine.position_manager.close_position_by_symbol.assert_called_once_with(long_symbol, "manual")
+
+    @pytest.mark.asyncio
+    async def test_resolved_callback_stored_in_context(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test that resolved callback is stored in context.user_data."""
+        original_callback = "pattern_test_" + "Y" * 100
+        hashed = validate_callback_data(original_callback)
+
+        mock_update.callback_query.data = hashed
+
+        mock_handler = AsyncMock()
+        callback_handler.register_pattern("pattern_test_", mock_handler)
+
+        await callback_handler.handle_callback(mock_update, mock_context_with_user_data)
+
+        # Resolved callback should be stored in context
+        assert mock_context_with_user_data.user_data.get("_resolved_callback") == original_callback
+
+    @pytest.mark.asyncio
+    async def test_non_hashed_callback_works_normally(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test that normal (non-hashed) callbacks still work."""
+        mock_update.callback_query.data = "pos_select_BTCUSDT"
+
+        callback_handler.engine.position_manager.get_position_by_symbol.return_value = {
+            "symbol": "BTCUSDT",
+            "entry_price": 50000.0,
+            "current_price": 49000.0,
+            "take_profit_price": 48000.0,
+            "leverage": 10,
+            "margin": 100.0,
+            "unrealized_pnl": 100.0,
+            "unrealized_pnl_pct": 10.0,
+        }
+
+        await callback_handler.handle_position_select(mock_update, mock_context_with_user_data)
+
+        callback_handler.engine.position_manager.get_position_by_symbol.assert_called_once_with("BTCUSDT")
+
+    @pytest.mark.asyncio
+    async def test_confirm_action_with_long_data_resolved(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test confirm action works with hashed callback data."""
+        long_data = "extra_data_" * 20
+        original_callback = f"confirm_closeall_{long_data}"
+        hashed = validate_callback_data(original_callback)
+
+        mock_context_with_user_data.user_data["_resolved_callback"] = original_callback
+        mock_update.callback_query.data = hashed
+
+        await callback_handler.handle_confirm(mock_update, mock_context_with_user_data)
+
+        mock_update.callback_query.edit_message_text.assert_called_once()
+        message = mock_update.callback_query.edit_message_text.call_args[0][0]
+        assert "Confirmed: closeall" in message
+
+    @pytest.mark.asyncio
+    async def test_exact_match_stores_resolved_callback(self, callback_handler, mock_update, mock_context_with_user_data):
+        """Test that exact match handlers also store resolved callback in context.
+
+        This tests the fix for the issue where exact match handlers didn't store
+        _resolved_callback, causing handlers to receive hashed data instead of original.
+        """
+        # Register an exact match handler (not a pattern)
+        original_callback = "test_exact_" + "Z" * 100  # Long enough to be hashed
+        hashed = validate_callback_data(original_callback)
+
+        mock_update.callback_query.data = hashed
+
+        mock_handler = AsyncMock()
+        # Register as exact match (not pattern)
+        callback_handler.handlers[original_callback] = mock_handler
+
+        await callback_handler.handle_callback(mock_update, mock_context_with_user_data)
+
+        # Handler should be called
+        mock_handler.assert_called_once()
+        # Resolved callback should be stored in context (the fix we made)
+        assert mock_context_with_user_data.user_data.get("_resolved_callback") == original_callback

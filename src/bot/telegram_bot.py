@@ -12,8 +12,9 @@ from telegram.helpers import escape_markdown
 from ..config import ConcurrencyConfig, TelegramConfig
 from .callback_handler import CallbackHandler
 from .commands import BotCommands
-from .keyboard_builder import KeyboardBuilder
+from .keyboard_builder import KeyboardBuilder, PersistentMenu
 from .keyboard_init import init_keyboard_templates
+from .menu_handler import MenuButtonHandler
 from .scan_queue import ScanQueueManager
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class TelegramBot:
         self.scan_queue = ScanQueueManager(max_queue_size=queue_size, worker_delay_seconds=worker_delay)
         self.commands = BotCommands(session, engine, self.scan_queue, concurrency_config)
         self.callback_handler = CallbackHandler(session, engine, self.commands)
+        self.menu_handler = MenuButtonHandler(self.commands)
         self.keyboard_builder = KeyboardBuilder(session)
         self.application: Optional[Application] = None
         self.chat_id = config.chat_id
@@ -91,7 +93,10 @@ class TelegramBot:
         # Register callback query handler for inline keyboards
         app.add_handler(CallbackQueryHandler(self.callback_handler.handle_callback))
 
-        logger.info("Telegram bot handlers registered (commands + callbacks)")
+        # Register message handler for persistent menu buttons
+        app.add_handler(self.menu_handler.get_message_handler())
+
+        logger.info("Telegram bot handlers registered (commands + callbacks + menu buttons)")
 
     async def initialize(self):
         """Initialize the telegram application."""
