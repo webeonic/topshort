@@ -35,6 +35,9 @@ TIMEFRAME_TO_MINUTES = {
 MAX_CANDLES_PER_REQUEST = 1500
 TIMEFRAME_WORKER_CAP = 16
 
+# Minimum TP distance as percentage of entry price to cover trading fees
+MIN_TP_PERCENT = 0.1  # 0.1% minimum to cover ~0.06% round-trip fees + buffer
+
 
 class OrderBlockSignal(TypedDict, total=False):
     symbol: str
@@ -117,6 +120,15 @@ class OrderBlockBreakoutStrategy:
             entry_price = (order_block["low"] + order_block["high"]) / 2
             stop_loss = self._calculate_stop(entry_price, atr, direction, order_block)
             targets = self._calculate_targets(entry_price, atr, direction)
+
+            # Validate minimum TP distance to cover trading fees
+            if targets:
+                tp_distance_pct = abs(targets[0] - entry_price) / entry_price * 100
+                if tp_distance_pct < MIN_TP_PERCENT:
+                    return self._invalid(
+                        symbol,
+                        f"TP too small ({tp_distance_pct:.3f}% < {MIN_TP_PERCENT}% min) - insufficient to cover fees",
+                    )
 
             rr = abs(targets[0] - entry_price) / abs(entry_price - stop_loss) if stop_loss != entry_price else 0
 
