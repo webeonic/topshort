@@ -5,7 +5,22 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 
-from src.bot.keyboard_builder import KeyboardBuilder, KeyboardTemplates
+from src.bot.keyboard_builder import (
+    MENU_BTN_HELP,
+    MENU_BTN_HISTORY,
+    MENU_BTN_POSITIONS,
+    MENU_BTN_SCAN,
+    MENU_BTN_SETTINGS,
+    MENU_BTN_STATUS,
+    MENU_BTN_TRADING,
+    TELEGRAM_CALLBACK_DATA_LIMIT,
+    CallbackDataTooLongError,
+    InlineTemplates,
+    KeyboardBuilder,
+    KeyboardTemplates,
+    PersistentMenu,
+    validate_callback_data,
+)
 
 
 @pytest.fixture
@@ -326,18 +341,12 @@ class TestRemoveKeyboard:
         assert result.remove_keyboard is True
 
 
-class TestKeyboardTemplates:
-    """Test KeyboardTemplates static methods."""
+class TestKeyboardTemplatesAlias:
+    """Test KeyboardTemplates is alias for InlineTemplates."""
 
-    def test_main_menu_template(self):
-        """Test main menu template."""
-        buttons = KeyboardTemplates.main_menu()
-
-        assert isinstance(buttons, list)
-        assert len(buttons) > 0
-        assert all("text" in btn and "callback_data" in btn for btn in buttons)
-        assert any("Status" in btn["text"] for btn in buttons)
-        assert any("Positions" in btn["text"] for btn in buttons)
+    def test_keyboard_templates_is_inline_templates(self):
+        """Test KeyboardTemplates is alias for InlineTemplates."""
+        assert KeyboardTemplates is InlineTemplates
 
     def test_position_actions_template(self):
         """Test position actions template."""
@@ -345,7 +354,8 @@ class TestKeyboardTemplates:
 
         assert isinstance(buttons, list)
         assert len(buttons) > 0
-        assert any("Details" in btn["text"] for btn in buttons)
+        # Russian labels now
+        assert any("Детали" in btn["text"] for btn in buttons)
         assert any("BTCUSDT" in btn["callback_data"] for btn in buttons)
 
     def test_trading_controls_template(self):
@@ -353,9 +363,9 @@ class TestKeyboardTemplates:
         buttons = KeyboardTemplates.trading_controls()
 
         assert isinstance(buttons, list)
-        assert any("Resume" in btn["text"] for btn in buttons)
-        assert any("Pause" in btn["text"] for btn in buttons)
-        assert any("Scan" in btn["text"] for btn in buttons)
+        # Russian labels now - either Возобновить or Пауза depending on state
+        assert any("Пауза" in btn["text"] or "Возобновить" in btn["text"] for btn in buttons)
+        assert any("Скан" in btn["text"] for btn in buttons)
 
     def test_confirm_action_template(self):
         """Test confirm action template."""
@@ -363,8 +373,9 @@ class TestKeyboardTemplates:
 
         assert isinstance(buttons, list)
         assert len(buttons) == 2
-        assert any("Confirm" in btn["text"] for btn in buttons)
-        assert any("Cancel" in btn["text"] for btn in buttons)
+        # Russian labels now
+        assert any("Подтвердить" in btn["text"] for btn in buttons)
+        assert any("Отмена" in btn["text"] for btn in buttons)
         assert any("confirm_closeall_data" in btn["callback_data"] for btn in buttons)
 
     def test_pagination_template_first_page(self):
@@ -374,18 +385,19 @@ class TestKeyboardTemplates:
         assert isinstance(buttons, list)
         # Should have current page indicator and next button
         assert any("1/3" in btn["text"] for btn in buttons)
-        assert any("Next" in btn["text"] for btn in buttons)
-        assert not any("Prev" in btn["text"] for btn in buttons)
+        # Russian label
+        assert any("Далее" in btn["text"] for btn in buttons)
+        assert not any("Назад" in btn["text"] for btn in buttons)
 
     def test_pagination_template_middle_page(self):
         """Test pagination template on middle page."""
         buttons = KeyboardTemplates.pagination(1, 3)
 
         assert isinstance(buttons, list)
-        # Should have prev, current, and next buttons
-        assert any("Prev" in btn["text"] for btn in buttons)
+        # Should have prev, current, and next buttons (Russian labels)
+        assert any("Назад" in btn["text"] for btn in buttons)
         assert any("2/3" in btn["text"] for btn in buttons)
-        assert any("Next" in btn["text"] for btn in buttons)
+        assert any("Далее" in btn["text"] for btn in buttons)
 
     def test_pagination_template_last_page(self):
         """Test pagination template on last page."""
@@ -393,9 +405,9 @@ class TestKeyboardTemplates:
 
         assert isinstance(buttons, list)
         # Should have prev button and current page indicator
-        assert any("Prev" in btn["text"] for btn in buttons)
+        assert any("Назад" in btn["text"] for btn in buttons)
         assert any("3/3" in btn["text"] for btn in buttons)
-        assert not any("Next" in btn["text"] for btn in buttons)
+        assert not any("Далее" in btn["text"] for btn in buttons)
 
     def test_settings_menu_template(self):
         """Test settings menu template."""
@@ -403,9 +415,9 @@ class TestKeyboardTemplates:
 
         assert isinstance(buttons, list)
         assert len(buttons) > 0
-        assert any("Margin" in btn["text"] for btn in buttons)
-        assert any("Leverage" in btn["text"] for btn in buttons)
-        assert any("Back" in btn["text"] for btn in buttons)
+        # Russian labels now
+        assert any("Маржа" in btn["text"] for btn in buttons)
+        assert any("Плечо" in btn["text"] for btn in buttons)
 
 
 class TestBuildKeyboardStructure:
@@ -447,3 +459,379 @@ class TestBuildKeyboardStructure:
 
         # Should skip invalid button
         assert isinstance(keyboard, list)
+
+
+class TestPersistentMenu:
+    """Test PersistentMenu class for ReplyKeyboard menus."""
+
+    def test_main_menu_returns_reply_keyboard(self):
+        """Test main menu returns ReplyKeyboardMarkup."""
+        keyboard = PersistentMenu.main_menu()
+
+        assert isinstance(keyboard, ReplyKeyboardMarkup)
+        assert keyboard.is_persistent is True
+        assert keyboard.resize_keyboard is True
+
+    def test_main_menu_has_all_buttons(self):
+        """Test main menu has all required buttons."""
+        keyboard = PersistentMenu.main_menu()
+
+        # Flatten keyboard to get all button texts
+        button_texts = []
+        for row in keyboard.keyboard:
+            for btn in row:
+                button_texts.append(btn.text)
+
+        assert MENU_BTN_STATUS in button_texts
+        assert MENU_BTN_POSITIONS in button_texts
+        assert MENU_BTN_SCAN in button_texts
+        assert MENU_BTN_SETTINGS in button_texts
+        assert MENU_BTN_HELP in button_texts
+        assert MENU_BTN_HISTORY in button_texts
+
+    def test_trading_menu_returns_reply_keyboard(self):
+        """Test trading menu returns ReplyKeyboardMarkup."""
+        keyboard = PersistentMenu.trading_menu()
+
+        assert isinstance(keyboard, ReplyKeyboardMarkup)
+        assert keyboard.is_persistent is True
+        assert keyboard.resize_keyboard is True
+
+    def test_trading_menu_has_trading_button(self):
+        """Test trading menu has trading control button."""
+        keyboard = PersistentMenu.trading_menu()
+
+        button_texts = []
+        for row in keyboard.keyboard:
+            for btn in row:
+                button_texts.append(btn.text)
+
+        assert MENU_BTN_TRADING in button_texts
+
+
+class TestInlineTemplates:
+    """Test InlineTemplates class for inline keyboard templates."""
+
+    def test_position_actions_creates_buttons(self):
+        """Test position actions creates correct buttons."""
+        buttons = InlineTemplates.position_actions("BTCUSDT")
+
+        assert isinstance(buttons, list)
+        assert len(buttons) == 3
+
+        # Check callback data contains symbol
+        callback_datas = [btn["callback_data"] for btn in buttons]
+        assert any("BTCUSDT" in cb for cb in callback_datas)
+
+    def test_positions_list_creates_buttons_for_each_position(self):
+        """Test positions list creates button for each position."""
+        positions = [
+            {"symbol": "BTCUSDT", "unrealized_pnl": 100.0},
+            {"symbol": "ETHUSDT", "unrealized_pnl": -50.0},
+        ]
+
+        buttons = InlineTemplates.positions_list(positions)
+
+        assert len(buttons) == 2
+        assert any("BTCUSDT" in btn["callback_data"] for btn in buttons)
+        assert any("ETHUSDT" in btn["callback_data"] for btn in buttons)
+
+    def test_positions_list_shows_pnl_emoji(self):
+        """Test positions list shows correct PnL emoji."""
+        positions = [
+            {"symbol": "BTCUSDT", "unrealized_pnl": 100.0},  # Profit - green
+            {"symbol": "ETHUSDT", "unrealized_pnl": -50.0},  # Loss - red
+        ]
+
+        buttons = InlineTemplates.positions_list(positions)
+
+        btc_btn = next(btn for btn in buttons if "BTCUSDT" in btn["callback_data"])
+        eth_btn = next(btn for btn in buttons if "ETHUSDT" in btn["callback_data"])
+
+        assert "🟢" in btc_btn["text"]
+        assert "🔴" in eth_btn["text"]
+
+    def test_trading_controls_when_paused(self):
+        """Test trading controls show resume when paused."""
+        buttons = InlineTemplates.trading_controls(is_paused=True)
+
+        # Should have resume button
+        texts = [btn["text"] for btn in buttons]
+        assert any("Возобновить" in t for t in texts)
+
+    def test_trading_controls_when_active(self):
+        """Test trading controls show pause when active."""
+        buttons = InlineTemplates.trading_controls(is_paused=False)
+
+        # Should have pause button
+        texts = [btn["text"] for btn in buttons]
+        assert any("Пауза" in t for t in texts)
+
+    def test_scan_strategy_selection_without_order_block(self):
+        """Test scan strategy only shows pump cooldown when OB disabled."""
+        buttons = InlineTemplates.scan_strategy_selection(order_block_enabled=False)
+
+        assert len(buttons) == 1
+        assert "pump_cooldown" in buttons[0]["callback_data"]
+
+    def test_scan_strategy_selection_with_order_block(self):
+        """Test scan strategy shows both strategies when OB enabled."""
+        buttons = InlineTemplates.scan_strategy_selection(order_block_enabled=True)
+
+        assert len(buttons) == 2
+        callback_datas = [btn["callback_data"] for btn in buttons]
+        assert any("pump_cooldown" in cb for cb in callback_datas)
+        assert any("order_block" in cb for cb in callback_datas)
+
+    def test_confirm_action_creates_confirm_cancel_buttons(self):
+        """Test confirm action creates confirm and cancel buttons."""
+        buttons = InlineTemplates.confirm_action("closeall", "data")
+
+        assert len(buttons) == 2
+        texts = [btn["text"] for btn in buttons]
+        assert any("Подтвердить" in t for t in texts)
+        assert any("Отмена" in t for t in texts)
+
+    def test_confirm_action_callback_data(self):
+        """Test confirm action includes action and data in callback."""
+        buttons = InlineTemplates.confirm_action("closeall", "extra")
+
+        confirm_btn = next(btn for btn in buttons if "Подтвердить" in btn["text"])
+        assert "confirm_closeall_extra" in confirm_btn["callback_data"]
+
+    def test_pagination_first_page(self):
+        """Test pagination on first page has no prev button."""
+        buttons = InlineTemplates.pagination(0, 5)
+
+        texts = [btn["text"] for btn in buttons]
+        assert not any("Назад" in t for t in texts)
+        assert any("Далее" in t for t in texts)
+        assert any("1/5" in t for t in texts)
+
+    def test_pagination_last_page(self):
+        """Test pagination on last page has no next button."""
+        buttons = InlineTemplates.pagination(4, 5)
+
+        texts = [btn["text"] for btn in buttons]
+        assert any("Назад" in t for t in texts)
+        assert not any("Далее" in t for t in texts)
+        assert any("5/5" in t for t in texts)
+
+    def test_pagination_middle_page(self):
+        """Test pagination on middle page has both buttons."""
+        buttons = InlineTemplates.pagination(2, 5)
+
+        texts = [btn["text"] for btn in buttons]
+        assert any("Назад" in t for t in texts)
+        assert any("Далее" in t for t in texts)
+        assert any("3/5" in t for t in texts)
+
+    def test_settings_menu_has_all_settings(self):
+        """Test settings menu has all configurable settings."""
+        buttons = InlineTemplates.settings_menu()
+
+        callback_datas = [btn["callback_data"] for btn in buttons]
+        assert any("margin" in cb for cb in callback_datas)
+        assert any("max_positions" in cb for cb in callback_datas)
+        assert any("leverage" in cb for cb in callback_datas)
+        assert any("take_profit" in cb for cb in callback_datas)
+
+    def test_back_button_default_callback(self):
+        """Test back button has default callback data."""
+        btn = InlineTemplates.back_button()
+
+        assert btn["callback_data"] == "cmd_main"
+        assert "Назад" in btn["text"]
+
+    def test_back_button_custom_callback(self):
+        """Test back button with custom callback data."""
+        btn = InlineTemplates.back_button("cmd_positions")
+
+        assert btn["callback_data"] == "cmd_positions"
+
+
+class TestMenuButtonConstants:
+    """Test menu button text constants."""
+
+    def test_constants_are_strings(self):
+        """Test all menu button constants are non-empty strings."""
+        constants = [
+            MENU_BTN_STATUS,
+            MENU_BTN_POSITIONS,
+            MENU_BTN_SCAN,
+            MENU_BTN_SETTINGS,
+            MENU_BTN_HELP,
+            MENU_BTN_HISTORY,
+            MENU_BTN_TRADING,
+        ]
+
+        for const in constants:
+            assert isinstance(const, str)
+            assert len(const) > 0
+
+    def test_constants_contain_emoji(self):
+        """Test menu button constants contain emojis for visual appeal."""
+        constants = [
+            MENU_BTN_STATUS,
+            MENU_BTN_POSITIONS,
+            MENU_BTN_SCAN,
+            MENU_BTN_SETTINGS,
+            MENU_BTN_HELP,
+            MENU_BTN_HISTORY,
+            MENU_BTN_TRADING,
+        ]
+
+        # Each button should start with an emoji
+        for const in constants:
+            # Emojis are typically in the range U+1F300 to U+1F9FF
+            # or U+2600 to U+26FF for misc symbols
+            first_char = const[0]
+            assert ord(first_char) > 127, f"Button '{const}' should start with emoji"
+
+
+class TestValidateCallbackData:
+    """Test validate_callback_data function for Telegram's 64-byte limit."""
+
+    def test_short_callback_data_unchanged(self):
+        """Test that short callback_data passes through unchanged."""
+        short_data = "pos_details_BTCUSDT"
+        result = validate_callback_data(short_data)
+        assert result == short_data
+
+    def test_empty_callback_data_returns_empty(self):
+        """Test that empty string returns empty string."""
+        result = validate_callback_data("")
+        assert result == ""
+
+    def test_none_callback_data_returns_none(self):
+        """Test that None returns None (falsy value)."""
+        result = validate_callback_data(None)
+        assert result is None
+
+    def test_exactly_64_bytes_unchanged(self):
+        """Test that exactly 64-byte callback_data passes unchanged."""
+        # Create exactly 64 bytes
+        data = "a" * 64
+        assert len(data.encode("utf-8")) == 64
+        result = validate_callback_data(data)
+        assert result == data
+
+    def test_65_bytes_gets_truncated(self):
+        """Test that 65-byte callback_data gets hashed."""
+        data = "a" * 65
+        assert len(data.encode("utf-8")) == 65
+        result = validate_callback_data(data)
+        # Should be truncated/hashed
+        assert result != data
+        assert len(result.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_LIMIT
+
+    def test_long_callback_data_gets_hashed(self):
+        """Test that very long callback_data gets hashed and stays under limit."""
+        long_data = "confirm_close_position_" + "X" * 100
+        assert len(long_data.encode("utf-8")) > TELEGRAM_CALLBACK_DATA_LIMIT
+
+        result = validate_callback_data(long_data)
+
+        # Result should be under 64 bytes
+        assert len(result.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_LIMIT
+        # Should preserve prefix
+        assert result.startswith("confirm_h")
+        # Hash should be 8 hex chars
+        assert len(result.split("_h")[1]) == 8
+
+    def test_unicode_callback_data_byte_length(self):
+        """Test that Unicode characters are measured in bytes, not chars."""
+        # Russian text takes 2 bytes per char in UTF-8
+        # 30 Russian chars = 60 bytes, under limit
+        short_unicode = "а" * 30
+        assert len(short_unicode.encode("utf-8")) == 60
+        result = validate_callback_data(short_unicode)
+        assert result == short_unicode
+
+        # 40 Russian chars = 80 bytes, over limit
+        long_unicode = "б" * 40
+        assert len(long_unicode.encode("utf-8")) == 80
+        result = validate_callback_data(long_unicode)
+        assert result != long_unicode
+        assert len(result.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_LIMIT
+
+    def test_raise_on_overflow_true(self):
+        """Test that raise_on_overflow=True raises exception for long data."""
+        long_data = "x" * 100
+
+        with pytest.raises(CallbackDataTooLongError) as exc_info:
+            validate_callback_data(long_data, raise_on_overflow=True)
+
+        assert "100 bytes" in str(exc_info.value)
+        assert "exceeds 64 byte limit" in str(exc_info.value)
+
+    def test_raise_on_overflow_false_no_exception(self):
+        """Test that raise_on_overflow=False does not raise exception."""
+        long_data = "x" * 100
+
+        # Should not raise, should return hashed value
+        result = validate_callback_data(long_data, raise_on_overflow=False)
+        assert len(result.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_LIMIT
+
+    def test_hash_is_deterministic(self):
+        """Test that same input always produces same hash output."""
+        long_data = "confirm_" + "a" * 100
+
+        result1 = validate_callback_data(long_data)
+        result2 = validate_callback_data(long_data)
+
+        assert result1 == result2
+
+    def test_different_long_inputs_different_hashes(self):
+        """Test that different inputs produce different hashes."""
+        data1 = "confirm_" + "a" * 100
+        data2 = "confirm_" + "b" * 100
+
+        result1 = validate_callback_data(data1)
+        result2 = validate_callback_data(data2)
+
+        assert result1 != result2
+
+    def test_preserves_prefix_from_callback_data(self):
+        """Test that the hash result preserves the original prefix."""
+        data = "pos_details_" + "VERYLONGSYMBOLNAME" * 10
+
+        result = validate_callback_data(data)
+
+        # Should start with original prefix
+        assert result.startswith("pos_h")
+
+    def test_inline_templates_callback_data_validated(self):
+        """Test that InlineTemplates methods return validated callback_data."""
+        # Test with very long symbol (edge case)
+        long_symbol = "A" * 100  # Unrealistic but tests the validation
+        buttons = InlineTemplates.position_actions(long_symbol)
+
+        for btn in buttons:
+            callback_data = btn["callback_data"]
+            byte_length = len(callback_data.encode("utf-8"))
+            assert (
+                byte_length <= TELEGRAM_CALLBACK_DATA_LIMIT
+            ), f"callback_data '{callback_data}' is {byte_length} bytes, exceeds limit"
+
+    def test_confirm_action_long_data_validated(self):
+        """Test that confirm_action handles long action/data combinations."""
+        long_action = "close_all_positions_" * 5
+        long_data = "symbol_" * 10
+
+        buttons = InlineTemplates.confirm_action(long_action, long_data)
+
+        for btn in buttons:
+            if btn["callback_data"] != "cancel":  # cancel is always short
+                byte_length = len(btn["callback_data"].encode("utf-8"))
+                assert byte_length <= TELEGRAM_CALLBACK_DATA_LIMIT
+
+    def test_pagination_long_prefix_validated(self):
+        """Test that pagination handles long prefix."""
+        long_prefix = "history_positions_list_page_prefix_" * 3
+
+        buttons = InlineTemplates.pagination(5, 10, prefix=long_prefix)
+
+        for btn in buttons:
+            byte_length = len(btn["callback_data"].encode("utf-8"))
+            assert byte_length <= TELEGRAM_CALLBACK_DATA_LIMIT

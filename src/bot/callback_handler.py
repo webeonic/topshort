@@ -15,6 +15,7 @@ from ..database.repository import CallbackLogRepository, KeyboardStateRepository
 from ..trading.engine import TradingEngine
 from ..utils.async_executor import run_blocking
 from . import commands as bot_commands_module
+from .keyboard_builder import InlineTemplates, KeyboardBuilder
 from .scan_queue import ScanQueueManager
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ class CallbackHandler:
         self.register("cmd_scan", self.handle_scan_menu)
 
         # Position callbacks
+        self.register_pattern("pos_select_", self.handle_position_select)
         self.register_pattern("pos_details_", self.handle_position_details)
         self.register_pattern("pos_refresh_", self.handle_position_refresh)
         self.register_pattern("pos_close_", self.handle_position_close)
@@ -259,6 +261,37 @@ class CallbackHandler:
         await self._get_commands().scan(update, context)
 
     @log_callback(success=True)
+    async def handle_position_select(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle position selection from list - show action buttons."""
+        query = update.callback_query
+        symbol = query.data.replace("pos_select_", "")
+
+        position = await run_blocking(self.engine.position_manager.get_position_by_symbol, symbol)
+        if not position:
+            await query.edit_message_text(f"❌ Позиция не найдена: {symbol}")
+            return
+
+        pnl_emoji = "🟢" if position["unrealized_pnl"] > 0 else "🔴"
+        message = f"""
+📊 *{position['symbol']}*
+
+💰 Вход: {position['entry_price']:.4f}
+📈 Текущая: {position['current_price']:.4f}
+🎯 TP: {position['take_profit_price']:.4f}
+📊 Плечо: {position['leverage']}x
+💵 Маржа: {position['margin']:.2f} USDT
+{pnl_emoji} P&L: {position['unrealized_pnl']:.2f} USDT ({position['unrealized_pnl_pct']:.2f}%)
+
+Выберите действие:
+"""
+        # Build inline keyboard with position action buttons
+        builder = KeyboardBuilder(self.session)
+        buttons = InlineTemplates.position_actions(symbol)
+        buttons.append(InlineTemplates.back_button("cmd_positions"))
+        keyboard = builder.create_inline_keyboard(buttons, n_cols=3)
+
+        await query.edit_message_text(message, parse_mode="Markdown", reply_markup=keyboard)
+
     async def handle_position_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position details callback."""
         query = update.callback_query
@@ -267,22 +300,29 @@ class CallbackHandler:
 
         position = await run_blocking(self.engine.position_manager.get_position_by_symbol, symbol)
         if not position:
-            await query.edit_message_text(f"❌ Position not found: {symbol}")
+            await query.edit_message_text(f"❌ Позиция не найдена: {symbol}")
             return
 
         pnl_emoji = "🟢" if position["unrealized_pnl"] > 0 else "🔴"
         message = f"""
-📊 *Position Details: {position['symbol']}*
+📊 *Детали позиции: {position['symbol']}*
 
-💰 Entry Price: {position['entry_price']:.4f}
-📈 Current Price: {position['current_price']:.4f}
+💰 Цена входа: {position['entry_price']:.4f}
+📈 Текущая цена: {position['current_price']:.4f}
 🎯 Take Profit: {position['take_profit_price']:.4f}
-📊 Leverage: {position['leverage']}x
-💵 Margin: {position['margin']:.2f} USDT
-{pnl_emoji} Unrealized P&L: {position['unrealized_pnl']:.2f} USDT ({position['unrealized_pnl_pct']:.2f}%)
-🕒 Opened: {position['opened_at']}
+📊 Плечо: {position['leverage']}x
+💵 Маржа: {position['margin']:.2f} USDT
+{pnl_emoji} Нереализованный P&L: {position['unrealized_pnl']:.2f} USDT ({position['unrealized_pnl_pct']:.2f}%)
+🕒 Открыта: {position['opened_at']}
 """
-        await query.edit_message_text(message, parse_mode="Markdown")
+        # Add back button
+        from .keyboard_builder import InlineTemplates, KeyboardBuilder
+
+        builder = KeyboardBuilder(self.session)
+        buttons = [InlineTemplates.back_button(f"pos_select_{symbol}")]
+        keyboard = builder.create_inline_keyboard(buttons, n_cols=1)
+
+        await query.edit_message_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
     @log_callback(success=True)
     async def handle_position_refresh(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,23 +342,23 @@ class CallbackHandler:
         query = update.callback_query
         symbol = query.data.replace("pos_close_", "")
 
-        await query.answer("Closing position...")
+        await query.answer("Закрываю позицию...")
 
         result = await run_blocking(self.engine.position_manager.close_position_by_symbol, symbol, "manual")
 
         if result:
             pnl_emoji = "🟢" if result["pnl"] > 0 else "🔴"
             message = f"""
-✅ *Position Closed*
+✅ *Позиция закрыта*
 
 *{result['symbol']}*
-💰 Entry: {result['entry_price']:.4f}
-💰 Exit: {result['exit_price']:.4f}
+💰 Вход: {result['entry_price']:.4f}
+💰 Выход: {result['exit_price']:.4f}
 {pnl_emoji} P&L: {result['pnl']:.2f} USDT ({result['pnl_pct']:.2f}%)
 """
             await query.edit_message_text(message, parse_mode="Markdown")
         else:
-            await query.edit_message_text(f"❌ Failed to close position: {symbol}")
+            await query.edit_message_text(f"❌ Не удалось закрыть позицию: {symbol}")
 
     @log_callback(success=True)
     async def handle_trading_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

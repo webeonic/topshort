@@ -166,25 +166,25 @@ class TestStartCommand:
 
     @pytest.mark.asyncio
     async def test_start_sends_welcome_message(self, bot_commands, mock_update, mock_context):
-        """Test start command sends welcome message."""
-        with patch.object(bot_commands.keyboard_builder, "build_inline_keyboard_from_template", return_value=None):
-            await bot_commands.start(mock_update, mock_context)
+        """Test start command sends welcome message with persistent menu."""
+        await bot_commands.start(mock_update, mock_context)
 
-            mock_update.effective_message.reply_text.assert_called_once()
-            message = mock_update.effective_message.reply_text.call_args[0][0]
-            assert "TopShort Trading Bot" in message
-            assert "Available commands" in message
+        mock_update.effective_message.reply_text.assert_called_once()
+        message = mock_update.effective_message.reply_text.call_args[0][0]
+        assert "TopShort Trading Bot" in message
+        # Russian message now
+        assert "Доступные команды" in message
 
     @pytest.mark.asyncio
-    async def test_start_with_keyboard(self, bot_commands, mock_update, mock_context):
-        """Test start command with inline keyboard."""
-        mock_keyboard = MagicMock()
-        with patch.object(bot_commands.keyboard_builder, "build_inline_keyboard_from_template", return_value=mock_keyboard):
-            await bot_commands.start(mock_update, mock_context)
+    async def test_start_with_persistent_keyboard(self, bot_commands, mock_update, mock_context):
+        """Test start command sets persistent reply keyboard."""
+        await bot_commands.start(mock_update, mock_context)
 
-            mock_update.effective_message.reply_text.assert_called_once()
-            call_kwargs = mock_update.effective_message.reply_text.call_args[1]
-            assert call_kwargs["reply_markup"] == mock_keyboard
+        mock_update.effective_message.reply_text.assert_called_once()
+        call_kwargs = mock_update.effective_message.reply_text.call_args[1]
+        # Should have ReplyKeyboardMarkup (persistent menu)
+        assert "reply_markup" in call_kwargs
+        assert call_kwargs["reply_markup"] is not None
 
 
 class TestStatusCommand:
@@ -226,7 +226,8 @@ class TestPositionsCommand:
 
         mock_update.effective_message.reply_text.assert_called_once()
         message = mock_update.effective_message.reply_text.call_args[0][0]
-        assert "Open positions" in message
+        # Russian labels now
+        assert "Открытые позиции" in message
         assert "BTCUSDT" in message
         assert "50000" in message
 
@@ -239,7 +240,8 @@ class TestPositionsCommand:
 
         mock_update.effective_message.reply_text.assert_called_once()
         message = mock_update.effective_message.reply_text.call_args[0][0]
-        assert "No open positions" in message
+        # Russian labels now
+        assert "Нет открытых позиций" in message
 
 
 class TestHistoryCommand:
@@ -313,7 +315,8 @@ class TestSettingsCommand:
 
         mock_update.effective_message.reply_text.assert_called_once()
         message = mock_update.effective_message.reply_text.call_args[0][0]
-        assert "Current settings" in message
+        # Russian labels now
+        assert "Текущие настройки" in message
         assert "margin_per_trade" in message
 
 
@@ -618,32 +621,32 @@ class TestCloseAllCommand:
 
 
 class TestShowMenuCommand:
-    """Test /menu command."""
+    """Test /menu command - trading controls menu."""
 
     @pytest.mark.asyncio
-    async def test_show_menu_with_template(self, bot_commands, mock_update, mock_context):
-        """Test menu command with template."""
+    async def test_show_menu_displays_trading_controls(self, bot_commands, mock_update, mock_context, mock_bot_status):
+        """Test menu command shows trading controls with inline keyboard."""
+        bot_commands.bot_status_repo.get.return_value = mock_bot_status
         mock_keyboard = MagicMock()
-        bot_commands.keyboard_builder.build_inline_keyboard_from_template.return_value = mock_keyboard
+        bot_commands.keyboard_builder.create_inline_keyboard.return_value = mock_keyboard
 
         await bot_commands.show_menu(mock_update, mock_context)
 
         mock_update.effective_message.reply_text.assert_called_once()
+        message = mock_update.effective_message.reply_text.call_args[0][0]
+        # Russian labels now
+        assert "Управление торговлей" in message
         call_kwargs = mock_update.effective_message.reply_text.call_args[1]
         assert call_kwargs["reply_markup"] == mock_keyboard
 
     @pytest.mark.asyncio
-    async def test_show_menu_fallback(self, bot_commands, mock_update, mock_context):
-        """Test menu command with fallback keyboard."""
-        bot_commands.keyboard_builder.build_inline_keyboard_from_template.return_value = None
+    async def test_show_menu_creates_inline_keyboard(self, bot_commands, mock_update, mock_context, mock_bot_status):
+        """Test menu command creates inline keyboard for trading controls."""
+        bot_commands.bot_status_repo.get.return_value = mock_bot_status
 
-        with patch.object(bot_commands.keyboard_builder, "create_inline_keyboard") as mock_create:
-            mock_keyboard = MagicMock()
-            mock_create.return_value = mock_keyboard
+        await bot_commands.show_menu(mock_update, mock_context)
 
-            await bot_commands.show_menu(mock_update, mock_context)
-
-            mock_create.assert_called_once()
+        bot_commands.keyboard_builder.create_inline_keyboard.assert_called_once()
 
 
 class TestRequireAuthDecorator:

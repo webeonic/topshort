@@ -1,15 +1,164 @@
-"""Dynamic keyboard builder for Telegram bot."""
+"""Dynamic keyboard builder for Telegram bot.
 
+This module provides two types of keyboards:
+1. ReplyKeyboardMarkup - Persistent menu at the bottom of the screen (main navigation)
+2. InlineKeyboardMarkup - Context-specific inline buttons (actions, settings, confirmations)
+"""
+
+import hashlib
 import logging
 from typing import Dict, List, Optional, Union
 
 from sqlalchemy.orm import Session
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import KeyboardButton as TgKeyboardButton
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
 from ..database.models import KeyboardButton
 from ..database.repository import KeyboardButtonRepository, KeyboardStateRepository, KeyboardTemplateRepository
 
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# CALLBACK DATA VALIDATION
+# =============================================================================
+
+# Telegram Bot API limit for callback_data (in bytes)
+TELEGRAM_CALLBACK_DATA_LIMIT = 64
+
+
+class CallbackDataTooLongError(Exception):
+    """Raised when callback_data exceeds Telegram's 64-byte limit and raise_on_overflow is True."""
+
+    pass
+
+
+def validate_callback_data(callback_data: str, raise_on_overflow: bool = False) -> str:
+    """Validate and safely truncate callback_data to fit Telegram's 64-byte limit.
+
+    Telegram Bot API restricts callback_data to a maximum of 64 bytes (UTF-8 encoded).
+    This function checks the byte length and either:
+    - Returns the original string if it fits
+    - Generates a shortened version using SHA256 hash if it exceeds the limit
+    - Raises an exception if raise_on_overflow=True
+
+    Args:
+        callback_data: Original callback data string
+        raise_on_overflow: If True, raise exception instead of truncating
+
+    Returns:
+        Valid callback_data string (≤64 bytes UTF-8)
+
+    Raises:
+        CallbackDataTooLongError: If raise_on_overflow=True and data exceeds limit
+
+    Example:
+        >>> validate_callback_data("short_data")
+        'short_data'
+        >>> validate_callback_data("very_long_" * 10)  # Will be hashed
+        'very_h1a2b3c4'
+    """
+    if not callback_data:
+        return callback_data
+
+    byte_length = len(callback_data.encode("utf-8"))
+
+    if byte_length <= TELEGRAM_CALLBACK_DATA_LIMIT:
+        return callback_data
+
+    if raise_on_overflow:
+        raise CallbackDataTooLongError(
+            f"callback_data '{callback_data[:30]}...' is {byte_length} bytes, "
+            f"exceeds {TELEGRAM_CALLBACK_DATA_LIMIT} byte limit"
+        )
+
+    # Generate short hash (8 hex chars = 8 bytes)
+    hash_suffix = hashlib.sha256(callback_data.encode("utf-8")).hexdigest()[:8]
+
+    # Extract prefix (first part before '_') for readability, max 20 chars
+    parts = callback_data.split("_")
+    prefix = parts[0][:20] if parts else "cb"
+
+    # Build new callback: prefix_h<hash>
+    # Format: prefix (max 20 chars) + "_h" (2 chars) + hash (8 chars) = max 30 bytes
+    new_callback = f"{prefix}_h{hash_suffix}"
+
+    # Safety check: ensure result fits (should always pass with above limits)
+    new_byte_length = len(new_callback.encode("utf-8"))
+    if new_byte_length > TELEGRAM_CALLBACK_DATA_LIMIT:
+        # Fallback: just use hash
+        new_callback = f"h{hash_suffix}"
+
+    logger.warning(
+        f"callback_data truncated: '{callback_data[:40]}...' ({byte_length}B) -> "
+        f"'{new_callback}' ({len(new_callback.encode('utf-8'))}B)"
+    )
+
+    return new_callback
+
+
+# =============================================================================
+# PERSISTENT REPLY KEYBOARD (always visible at bottom)
+# =============================================================================
+
+# Main menu button texts - these are matched in message handlers
+MENU_BTN_STATUS = "📊 Статус"
+MENU_BTN_POSITIONS = "💼 Позиции"
+MENU_BTN_SCAN = "🔍 Скан"
+MENU_BTN_SETTINGS = "⚙️ Настройки"
+MENU_BTN_HELP = "❓ Помощь"
+MENU_BTN_HISTORY = "📜 История"
+MENU_BTN_TRADING = "🎮 Торговля"
+
+
+class PersistentMenu:
+    """Builder for persistent reply keyboard menu."""
+
+    @staticmethod
+    def main_menu() -> ReplyKeyboardMarkup:
+        """Build the main persistent menu keyboard.
+
+        This keyboard is always visible at the bottom of the chat.
+        Buttons trigger text messages that are handled by MessageHandler.
+
+        Returns:
+            ReplyKeyboardMarkup with main navigation buttons
+        """
+        keyboard = [
+            [TgKeyboardButton(MENU_BTN_STATUS), TgKeyboardButton(MENU_BTN_POSITIONS)],
+            [TgKeyboardButton(MENU_BTN_SCAN), TgKeyboardButton(MENU_BTN_SETTINGS)],
+            [TgKeyboardButton(MENU_BTN_HISTORY), TgKeyboardButton(MENU_BTN_HELP)],
+        ]
+        return ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,  # Fit to content
+            is_persistent=True,  # Always show
+        )
+
+    @staticmethod
+    def trading_menu() -> ReplyKeyboardMarkup:
+        """Build trading control menu.
+
+        Extended menu with trading controls.
+
+        Returns:
+            ReplyKeyboardMarkup with trading buttons
+        """
+        keyboard = [
+            [TgKeyboardButton(MENU_BTN_STATUS), TgKeyboardButton(MENU_BTN_POSITIONS)],
+            [TgKeyboardButton(MENU_BTN_SCAN), TgKeyboardButton(MENU_BTN_TRADING)],
+            [TgKeyboardButton(MENU_BTN_SETTINGS), TgKeyboardButton(MENU_BTN_HELP)],
+        ]
+        return ReplyKeyboardMarkup(
+            keyboard,
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+
+
+# =============================================================================
+# INLINE KEYBOARD TEMPLATES (context-specific)
+# =============================================================================
 
 
 class KeyboardBuilder:
@@ -171,7 +320,9 @@ class KeyboardBuilder:
 
             # Replace placeholders in label and callback_data
             label = self._replace_placeholders(button.label, dynamic_data)
-            callback_data = self._replace_placeholders(button.callback_data, dynamic_data) if button.callback_data else None
+            raw_callback = self._replace_placeholders(button.callback_data, dynamic_data) if button.callback_data else None
+            # Validate callback_data to ensure it fits Telegram's 64-byte limit
+            callback_data = validate_callback_data(raw_callback) if raw_callback else None
 
             # Create button based on type
             if button.button_type == "url" and button.url:
@@ -225,7 +376,9 @@ class KeyboardBuilder:
             if "url" in btn_data:
                 btn = InlineKeyboardButton(btn_data["text"], url=btn_data["url"])
             elif "callback_data" in btn_data:
-                btn = InlineKeyboardButton(btn_data["text"], callback_data=btn_data["callback_data"])
+                # Validate callback_data to ensure it fits Telegram's 64-byte limit
+                validated_callback = validate_callback_data(btn_data["callback_data"])
+                btn = InlineKeyboardButton(btn_data["text"], callback_data=validated_callback)
             else:
                 logger.warning(f"Invalid button data: {btn_data}")
                 continue
@@ -239,73 +392,165 @@ class KeyboardBuilder:
         return ReplyKeyboardRemove()
 
 
-class KeyboardTemplates:
-    """Pre-defined keyboard templates for common bot actions."""
+class InlineTemplates:
+    """Pre-defined inline keyboard templates for context-specific actions.
 
-    @staticmethod
-    def main_menu() -> List[Dict]:
-        """Main menu keyboard."""
-        return [
-            {"text": "📊 Status", "callback_data": "cmd_status"},
-            {"text": "💼 Positions", "callback_data": "cmd_positions"},
-            {"text": "📜 History", "callback_data": "cmd_history"},
-            {"text": "📈 Stats", "callback_data": "cmd_stats"},
-            {"text": "🔍 Scan", "callback_data": "cmd_scan"},
-            {"text": "⚙️ Settings", "callback_data": "cmd_settings"},
-            {"text": "❓ Help", "callback_data": "cmd_help"},
-        ]
+    These are used for:
+    - Position actions (details, close, refresh)
+    - Settings configuration
+    - Confirmations
+    - Scan strategy selection
+    - Pagination
+    """
 
     @staticmethod
     def position_actions(symbol: str) -> List[Dict]:
-        """Position-specific actions keyboard."""
+        """Position-specific actions keyboard.
+
+        Args:
+            symbol: Trading pair symbol (e.g., 'BTCUSDT')
+
+        Returns:
+            List of button definitions for position actions
+        """
         return [
-            {"text": "📊 Details", "callback_data": f"pos_details_{symbol}"},
-            {"text": "🔄 Refresh", "callback_data": f"pos_refresh_{symbol}"},
-            {"text": "❌ Close", "callback_data": f"pos_close_{symbol}"},
-            {"text": "🔙 Back", "callback_data": "cmd_positions"},
+            {"text": "📊 Детали", "callback_data": validate_callback_data(f"pos_details_{symbol}")},
+            {"text": "🔄 Обновить", "callback_data": validate_callback_data(f"pos_refresh_{symbol}")},
+            {"text": "❌ Закрыть", "callback_data": validate_callback_data(f"pos_close_{symbol}")},
         ]
 
     @staticmethod
-    def trading_controls() -> List[Dict]:
-        """Trading control buttons."""
-        return [
-            {"text": "▶️ Resume", "callback_data": "trading_resume"},
-            {"text": "⏸️ Pause", "callback_data": "trading_pause"},
-            {"text": "🔍 Scan Now", "callback_data": "trading_scan"},
-            {"text": "❌ Close All", "callback_data": "trading_closeall"},
+    def positions_list(positions: List[Dict]) -> List[Dict]:
+        """Generate buttons for list of positions.
+
+        Args:
+            positions: List of position dicts with 'symbol' key
+
+        Returns:
+            List of button definitions
+        """
+        buttons = []
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            pnl = pos.get("unrealized_pnl", 0)
+            if pnl > 0:
+                pnl_emoji = "🟢"
+            elif pnl < 0:
+                pnl_emoji = "🔴"
+            else:
+                pnl_emoji = "⚪"
+            buttons.append({"text": f"{pnl_emoji} {symbol}", "callback_data": validate_callback_data(f"pos_select_{symbol}")})
+        return buttons
+
+    @staticmethod
+    def trading_controls(is_paused: bool = False) -> List[Dict]:
+        """Trading control buttons.
+
+        Args:
+            is_paused: Current trading status
+
+        Returns:
+            List of button definitions for trading controls
+        """
+        buttons = []
+        if is_paused:
+            buttons.append({"text": "▶️ Возобновить", "callback_data": "trading_resume"})
+        else:
+            buttons.append({"text": "⏸️ Пауза", "callback_data": "trading_pause"})
+        buttons.extend(
+            [
+                {"text": "🔍 Скан сейчас", "callback_data": "cmd_scan"},
+                {"text": "❌ Закрыть все", "callback_data": "trading_closeall"},
+            ]
+        )
+        return buttons
+
+    @staticmethod
+    def scan_strategy_selection(order_block_enabled: bool = False) -> List[Dict]:
+        """Scan strategy selection buttons.
+
+        Args:
+            order_block_enabled: Whether Order Block strategy is enabled
+
+        Returns:
+            List of button definitions for strategy selection
+        """
+        buttons = [
+            {"text": "🚀 Pump & Cooldown", "callback_data": "scan_strategy_pump_cooldown"},
         ]
+        if order_block_enabled:
+            buttons.append({"text": "🧱 Order Block", "callback_data": "scan_strategy_order_block"})
+        return buttons
 
     @staticmethod
     def confirm_action(action: str, data: str = "") -> List[Dict]:
-        """Confirmation keyboard."""
+        """Confirmation keyboard.
+
+        Args:
+            action: Action to confirm
+            data: Additional data for callback
+
+        Returns:
+            List of button definitions for confirmation
+        """
+        raw_callback = f"confirm_{action}_{data}" if data else f"confirm_{action}"
+        callback_data = validate_callback_data(raw_callback)
         return [
-            {"text": "✅ Confirm", "callback_data": f"confirm_{action}_{data}"},
-            {"text": "❌ Cancel", "callback_data": "cancel"},
+            {"text": "✅ Подтвердить", "callback_data": callback_data},
+            {"text": "❌ Отмена", "callback_data": "cancel"},
         ]
 
     @staticmethod
     def pagination(current_page: int, total_pages: int, prefix: str = "page") -> List[Dict]:
-        """Pagination keyboard."""
+        """Pagination keyboard.
+
+        Args:
+            current_page: Current page number (0-indexed)
+            total_pages: Total number of pages
+            prefix: Callback data prefix
+
+        Returns:
+            List of button definitions for pagination
+        """
         buttons = []
 
         if current_page > 0:
-            buttons.append({"text": "◀️ Prev", "callback_data": f"{prefix}_{current_page - 1}"})
+            buttons.append({"text": "◀️ Назад", "callback_data": validate_callback_data(f"{prefix}_{current_page - 1}")})
 
         buttons.append({"text": f"📄 {current_page + 1}/{total_pages}", "callback_data": "noop"})
 
         if current_page < total_pages - 1:
-            buttons.append({"text": "Next ▶️", "callback_data": f"{prefix}_{current_page + 1}"})
+            buttons.append({"text": "Далее ▶️", "callback_data": validate_callback_data(f"{prefix}_{current_page + 1}")})
 
         return buttons
 
     @staticmethod
     def settings_menu() -> List[Dict]:
-        """Settings menu keyboard."""
+        """Settings menu keyboard.
+
+        Returns:
+            List of button definitions for settings menu
+        """
         return [
-            {"text": "💰 Margin", "callback_data": "setting_margin"},
-            {"text": "📊 Max Positions", "callback_data": "setting_max_positions"},
-            {"text": "📈 Leverage", "callback_data": "setting_leverage"},
-            {"text": "🎯 Take Profit", "callback_data": "setting_take_profit"},
-            {"text": "🔥 Pump Threshold", "callback_data": "setting_pump_threshold"},
-            {"text": "🔙 Back", "callback_data": "cmd_main"},
+            {"text": "💰 Маржа", "callback_data": "setting_margin_per_trade"},
+            {"text": "📊 Макс. позиции", "callback_data": "setting_max_positions"},
+            {"text": "📈 Плечо", "callback_data": "setting_default_leverage"},
+            {"text": "🎯 Take Profit", "callback_data": "setting_take_profit_pct"},
+            {"text": "🔥 Порог пампа", "callback_data": "setting_pump_threshold_pct"},
         ]
+
+    @staticmethod
+    def back_button(callback_data: str = "cmd_main") -> Dict:
+        """Single back button.
+
+        Args:
+            callback_data: Callback data for back action
+
+        Returns:
+            Button definition for back button
+        """
+        return {"text": "🔙 Назад", "callback_data": validate_callback_data(callback_data)}
+
+
+# Alias for backwards compatibility
+KeyboardTemplates = InlineTemplates

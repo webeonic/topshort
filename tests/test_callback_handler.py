@@ -314,7 +314,8 @@ class TestPositionCallbacks:
         callback_handler.engine.position_manager.get_position_by_symbol.assert_called_once_with("BTCUSDT")
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Position Details" in message
+        # Russian labels now
+        assert "Детали позиции" in message
         assert "BTCUSDT" in message
 
     @pytest.mark.asyncio
@@ -327,7 +328,8 @@ class TestPositionCallbacks:
 
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Position not found" in message
+        # Russian labels now
+        assert "Позиция не найдена" in message
 
     @pytest.mark.asyncio
     async def test_handle_position_refresh(self, callback_handler, mock_update, mock_context):
@@ -349,7 +351,8 @@ class TestPositionCallbacks:
         callback_handler.engine.position_manager.close_position_by_symbol.assert_called_once_with("BTCUSDT", "manual")
         mock_update.callback_query.edit_message_text.assert_called_once()
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Position Closed" in message
+        # Russian labels now
+        assert "Позиция закрыта" in message
 
     @pytest.mark.asyncio
     async def test_handle_position_close_failed(self, callback_handler, mock_update, mock_context):
@@ -360,7 +363,8 @@ class TestPositionCallbacks:
         await callback_handler.handle_position_close(mock_update, mock_context)
 
         message = mock_update.callback_query.edit_message_text.call_args[0][0]
-        assert "Failed to close position" in message
+        # Russian labels now
+        assert "Не удалось закрыть позицию" in message
 
 
 class TestTradingControlCallbacks:
