@@ -557,14 +557,35 @@ class PositionManager:
         logger.debug(f"Monitoring {len(open_positions)} open positions")
         removed_positions = []
 
+        # Fetch all exchange positions once (single API call instead of N calls)
+        try:
+            exchange_positions = self.client.get_positions()
+        except Exception as e:
+            logger.error(f"Failed to fetch positions from exchange: {e}")
+            return []  # Don't process if API fails - leave all positions intact
+
+        # Build lookup map by symbol for O(1) access
+        exchange_positions_map = {p.get("symbol"): p for p in exchange_positions}
+
         for position in open_positions:
             try:
-                # Check if position still exists on exchange
-                exchange_position = self.client.get_position_by_symbol(position.symbol)
+                # Look up exchange position by symbol
+                exchange_position = exchange_positions_map.get(position.symbol)
                 position_amt = float(exchange_position.get("positionAmt", 0)) if exchange_position else 0
 
-                # If position no longer exists on exchange, remove from database
-                if not exchange_position or position_amt == 0:
+                # Determine if our tracked position still exists on exchange
+                # positionAmt: negative = SHORT, positive = LONG, zero = no position
+                position_exists = False
+                if exchange_position and position_amt != 0:
+                    # Check that the side matches: SHORT expects negative, LONG expects positive
+                    if position.side == "short" and position_amt < 0:
+                        position_exists = True
+                    elif position.side == "long" and position_amt > 0:
+                        position_exists = True
+                    # If side doesn't match, position was replaced with opposite direction
+
+                # If position no longer exists on exchange (or was replaced), remove from database
+                if not position_exists:
                     logger.info(f"Position {position.symbol} no longer exists on exchange. Removing from database.")
 
                     # Save info for notification before deletion

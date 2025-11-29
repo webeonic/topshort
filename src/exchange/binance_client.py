@@ -485,19 +485,30 @@ class BinanceClient:
             return []
 
     def get_position_by_symbol(self, symbol: str) -> Optional[Dict]:
-        """Get position for specific symbol."""
-        try:
-            positions = self.get_positions()
-            market = self.exchange.market(symbol)
+        """Get position for specific symbol.
 
-            for position in positions:
-                if position.get("symbol") == market["id"]:
+        Returns:
+            Position dict if found and has non-zero amount, None if position doesn't exist.
+
+        Raises:
+            Exception: If API call fails (network error, rate limit, etc.)
+                Caller must handle exceptions to distinguish API errors from "position not found".
+        """
+        # Call API directly - don't catch exceptions to distinguish API errors from "not found"
+        # If API fails, exception propagates up to caller
+        balance = self.exchange.fetch_balance()
+        positions = balance.get("info", {}).get("positions", [])
+
+        market = self.exchange.market(symbol)
+
+        for position in positions:
+            if position.get("symbol") == market["id"]:
+                # Return only if position has non-zero amount
+                if float(position.get("positionAmt", 0)) != 0:
                     return position
 
-            return None
-        except Exception as e:
-            logger.error(f"Error getting position for {symbol}: {e}")
-            return None
+        # Position not found or has zero amount = doesn't exist
+        return None
 
     def get_balance(self) -> Dict:
         """Get account balance."""
