@@ -15,6 +15,12 @@ from .symbol_filter import SymbolPreFilter
 logger = logging.getLogger(__name__)
 
 
+class TickerFetchError(Exception):
+    """Raised when ticker fetch fails and prefilter cannot function."""
+
+    pass
+
+
 class MarketData:
     """Market data analyzer."""
 
@@ -287,6 +293,15 @@ class MarketData:
         tickers_map = self.client.fetch_tickers(symbols)
         ticker_duration = time.time() - ticker_start
         logger.info(f"Fetched {len(tickers_map)} tickers in batch (took {ticker_duration:.2f}s)")
+
+        # Fail fast if ticker fetch failed and prefilter is enabled
+        # This prevents silent empty results that look like "no signals found"
+        if not tickers_map and use_prefilter:
+            raise TickerFetchError(
+                f"Ticker fetch failed for {initial_symbol_count} symbols. "
+                "Pre-filter cannot function without ticker data. "
+                "Retry the scan or disable prefilter with use_prefilter=False."
+            )
 
         # Apply symbol exclusions (e.g., symbols with existing positions)
         # This is independent of prefiltering - exclusions are semantic, not performance optimization

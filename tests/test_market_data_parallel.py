@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.config import ScannerConfig
-from src.exchange.market_data import MarketData
+from src.exchange.market_data import MarketData, TickerFetchError
 
 logger = logging.getLogger(__name__)
 
@@ -372,3 +372,105 @@ class TestOptimalWorkersCalculation:
             workers = market_data._calculate_optimal_workers(100)
             # 4 * 3 = 12 workers
             assert workers == 12
+
+
+class TestTickerFetchFailure:
+    """Tests for ticker fetch failure handling."""
+
+    def test_empty_tickers_with_prefilter_raises_error(self, scanner_config):
+        """Test that empty tickers + prefilter=True raises TickerFetchError."""
+        client = Mock()
+        client.get_usdt_perpetual_symbols = Mock(return_value=["SYM1USDT", "SYM2USDT"])
+        client.fetch_tickers = Mock(return_value={})  # Empty dict = API failure
+
+        market_data = MarketData(client)
+
+        with pytest.raises(TickerFetchError) as exc_info:
+            market_data.scan_market(
+                pump_threshold=scanner_config.pump_threshold_pct,
+                pump_hours_min=scanner_config.pump_period_hours_min,
+                pump_hours_max=scanner_config.pump_period_hours_max,
+                cooldown_hours_min=scanner_config.cooldown_period_hours_min,
+                cooldown_hours_max=scanner_config.cooldown_period_hours_max,
+                volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
+                top_n=5,
+                use_prefilter=True,
+            )
+
+        assert "Ticker fetch failed" in str(exc_info.value)
+        assert "use_prefilter=False" in str(exc_info.value)
+
+    def test_empty_tickers_without_prefilter_continues(self, scanner_config):
+        """Test that empty tickers + prefilter=False continues scan."""
+        client = Mock()
+        client.get_usdt_perpetual_symbols = Mock(return_value=["SYM1USDT"])
+        client.fetch_tickers = Mock(return_value={})  # Empty dict = API failure
+
+        # Return mock OHLCV data for scan to work
+        ohlcv = [[i * 3600000, 100, 101, 99, 100, 1000] for i in range(100)]
+        client.get_ohlcv = Mock(return_value=ohlcv)
+
+        market_data = MarketData(client)
+
+        # Should NOT raise, just return empty results (no signals found)
+        results = market_data.scan_market(
+            pump_threshold=scanner_config.pump_threshold_pct,
+            pump_hours_min=scanner_config.pump_period_hours_min,
+            pump_hours_max=scanner_config.pump_period_hours_max,
+            cooldown_hours_min=scanner_config.cooldown_period_hours_min,
+            cooldown_hours_max=scanner_config.cooldown_period_hours_max,
+            volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
+            top_n=5,
+            use_prefilter=False,
+        )
+
+        assert isinstance(results, list)
+
+    def test_partial_tickers_with_prefilter_continues(self, scanner_config):
+        """Test that partial tickers + prefilter=True continues (not all symbols need tickers)."""
+        client = Mock()
+        symbols = ["SYM1USDT", "SYM2USDT", "SYM3USDT"]
+        client.get_usdt_perpetual_symbols = Mock(return_value=symbols)
+        # Only return ticker for one symbol
+        client.fetch_tickers = Mock(return_value={"SYM1USDT": {"percentage": 50.0, "quoteVolume": 10000000}})
+
+        # Return mock OHLCV data
+        ohlcv = [[i * 3600000, 100, 101, 99, 100, 1000] for i in range(100)]
+        client.get_ohlcv = Mock(return_value=ohlcv)
+
+        market_data = MarketData(client)
+
+        # Should NOT raise - partial tickers is OK, just filters more symbols
+        results = market_data.scan_market(
+            pump_threshold=scanner_config.pump_threshold_pct,
+            pump_hours_min=scanner_config.pump_period_hours_min,
+            pump_hours_max=scanner_config.pump_period_hours_max,
+            cooldown_hours_min=scanner_config.cooldown_period_hours_min,
+            cooldown_hours_max=scanner_config.cooldown_period_hours_max,
+            volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
+            top_n=5,
+            use_prefilter=True,
+        )
+
+        assert isinstance(results, list)
+
+    def test_error_message_includes_symbol_count(self, scanner_config):
+        """Test that error message includes the number of symbols affected."""
+        client = Mock()
+        client.get_usdt_perpetual_symbols = Mock(return_value=[f"SYM{i}USDT" for i in range(50)])
+        client.fetch_tickers = Mock(return_value={})
+
+        market_data = MarketData(client)
+
+        with pytest.raises(TickerFetchError) as exc_info:
+            market_data.scan_market(
+                pump_threshold=30.0,
+                pump_hours_min=48,
+                pump_hours_max=72,
+                cooldown_hours_min=4,
+                cooldown_hours_max=8,
+                volume_decrease_threshold=20.0,
+                use_prefilter=True,
+            )
+
+        assert "50 symbols" in str(exc_info.value)
