@@ -9,6 +9,8 @@ import ccxt
 from pybreaker import CircuitBreaker
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from .ohlcv_cache import OHLCVCache
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,8 +79,23 @@ api_circuit_breaker = CircuitBreaker(fail_max=5, reset_timeout=60, name="binance
 class BinanceClient:
     """Wrapper for CCXT Binance Futures client."""
 
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
-        """Initialize Binance client."""
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        testnet: bool = True,
+        ohlcv_cache_enabled: bool = True,
+        ohlcv_cache_max_entries: int = 5000,
+    ):
+        """Initialize Binance client.
+
+        Args:
+            api_key: Binance API key
+            api_secret: Binance API secret
+            testnet: Whether to use testnet (default True)
+            ohlcv_cache_enabled: Whether to enable OHLCV caching (default True)
+            ohlcv_cache_max_entries: Maximum cache entries (default 5000)
+        """
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
@@ -90,6 +107,10 @@ class BinanceClient:
         self._hedge_mode_set = False
         self._hedge_mode_lock = threading.Lock()
 
+        # OHLCV caching for scan performance optimization
+        self._ohlcv_cache_enabled = ohlcv_cache_enabled
+        self._ohlcv_cache = OHLCVCache(max_entries=ohlcv_cache_max_entries) if ohlcv_cache_enabled else None
+
         # Initialize for main thread (and verify credentials/connection)
         # This ensures we fail early if config is bad, and sets up initial state
         self.exchange  # Access property to create instance
@@ -98,6 +119,9 @@ class BinanceClient:
             logger.info("Binance client initialized in TESTNET mode")
         else:
             logger.info("Binance client initialized in LIVE mode")
+
+        if ohlcv_cache_enabled:
+            logger.info(f"OHLCV cache enabled with max {ohlcv_cache_max_entries} entries")
 
     @property
     def exchange(self):
@@ -195,19 +219,55 @@ class BinanceClient:
     )
     @api_circuit_breaker
     def get_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 100) -> List[List]:
-        """Get OHLCV data for a symbol.
+        """Get OHLCV data for a symbol with optional caching.
+
+        Uses smart TTL caching to reduce API calls during market scans.
+        Cache expires at timeframe boundary (e.g., 1h data expires at next hour).
 
         Returns: List of [timestamp, open, high, low, close, volume]
         """
+        # Check cache first
+        if self._ohlcv_cache_enabled and self._ohlcv_cache:
+            cached = self._ohlcv_cache.get(symbol, timeframe, limit)
+            if cached is not None:
+                logger.debug(f"Cache HIT for {symbol} {timeframe}")
+                return cached
+
+        # Fetch from API
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+
+            # Store in cache
+            if self._ohlcv_cache_enabled and self._ohlcv_cache and ohlcv:
+                self._ohlcv_cache.set(symbol, timeframe, limit, ohlcv)
+                logger.debug(f"Cache SET for {symbol} {timeframe}")
+
             return ohlcv
-        except ccxt.RateLimitExceeded as e:
+        except ccxt.RateLimitExceeded:
             logger.warning(f"Rate limit hit for {symbol}, retrying...")
             raise
         except Exception as e:
             logger.error(f"Error fetching OHLCV for {symbol}: {e}")
             return []
+
+    def get_cache_stats(self) -> Dict:
+        """Get OHLCV cache statistics.
+
+        Returns:
+            Dict with cache stats (entries, hits, misses, hit_rate_pct)
+            or {"enabled": False} if caching is disabled.
+        """
+        if self._ohlcv_cache_enabled and self._ohlcv_cache:
+            stats = self._ohlcv_cache.get_stats()
+            stats["enabled"] = True
+            return stats
+        return {"enabled": False}
+
+    def clear_cache(self) -> None:
+        """Clear the OHLCV cache."""
+        if self._ohlcv_cache:
+            self._ohlcv_cache.clear()
+            logger.info("OHLCV cache cleared")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -238,28 +298,31 @@ class BinanceClient:
     def fetch_tickers(self, symbols: List[str]) -> Dict[str, Dict]:
         """Fetch tickers for multiple symbols in a single API call.
 
-        Args:
-            symbols: List of trading symbols
+        This method fetches ALL tickers from the exchange in one request,
+        then filters to only the requested symbols. This is much faster than
+        making individual requests per symbol.
 
-        Returns: Dict mapping symbol to ticker data
+        Args:
+            symbols: List of trading symbols to fetch
+
+        Returns: Dict mapping symbol to ticker data. Empty dict on error.
         """
         try:
-            # ccxt supports batch ticker fetching
-            tickers = self.exchange.fetch_tickers(symbols)
-            logger.debug(f"Fetched {len(tickers)} tickers in batch")
-            return tickers
-        except ccxt.RateLimitExceeded as e:
-            logger.warning(f"Rate limit hit for batch tickers, retrying...")
+            # Fetch ALL tickers in one API call (much faster than individual requests)
+            # This works reliably on Binance futures
+            all_tickers = self.exchange.fetch_tickers()
+            # Filter to only requested symbols
+            result = {s: all_tickers[s] for s in symbols if s in all_tickers}
+            logger.debug(f"Fetched {len(result)}/{len(symbols)} tickers in batch")
+            return result
+        except ccxt.RateLimitExceeded:
+            logger.warning("Rate limit hit for batch tickers, retrying...")
             raise
         except Exception as e:
             logger.error(f"Error batch fetching tickers: {e}")
-            # Fallback to individual requests
-            result = {}
-            for symbol in symbols:
-                ticker = self.get_ticker(symbol)
-                if ticker:
-                    result[symbol] = ticker
-            return result
+            # Do NOT fallback to individual requests - this causes 10-15 min scans!
+            # Return empty dict and let caller handle missing tickers gracefully
+            return {}
 
     def set_leverage(self, symbol: str, leverage: int) -> bool:
         """Set leverage for a symbol."""

@@ -143,6 +143,7 @@ class TestParallelScanner:
             cooldown_hours_max=scanner_config.cooldown_period_hours_max,
             volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
             top_n=5,
+            use_prefilter=False,  # Disable pre-filter for this test (mock tickers don't have required fields)
         )
 
         # Should find 3 signals (SYM0, SYM1, SYM2)
@@ -162,6 +163,7 @@ class TestParallelScanner:
             cooldown_hours_max=scanner_config.cooldown_period_hours_max,
             volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
             top_n=5,
+            use_prefilter=False,  # Disable pre-filter for this test
         )
 
         # Results should be sorted by score descending
@@ -181,6 +183,7 @@ class TestParallelScanner:
             cooldown_hours_max=scanner_config.cooldown_period_hours_max,
             volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
             top_n=2,
+            use_prefilter=False,  # Disable pre-filter for this test
         )
 
         # Should return only 2 results even though 3 match
@@ -198,6 +201,7 @@ class TestParallelScanner:
             cooldown_hours_max=scanner_config.cooldown_period_hours_max,
             volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
             top_n=5,
+            use_prefilter=False,  # Disable pre-filter for this test
         )
 
         # Should call fetch_tickers once (batch call)
@@ -229,6 +233,7 @@ class TestParallelScanner:
             cooldown_hours_max=scanner_config.cooldown_period_hours_max,
             volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
             top_n=5,
+            use_prefilter=False,  # Disable pre-filter for this test
         )
 
         # Should still return results from working symbols
@@ -251,6 +256,7 @@ class TestParallelScanner:
             cooldown_hours_max=scanner_config.cooldown_period_hours_max,
             volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
             top_n=5,
+            use_prefilter=False,  # Disable pre-filter for this test
         )
         duration = time.time() - start_time
 

@@ -297,6 +297,7 @@ class TestScanProgressIntegration:
             volume_decrease_threshold=20.0,
             top_n=10,
             progress_callback=progress_callback,
+            use_prefilter=False,  # Disable pre-filter (mock tickers don't have required fields)
         )
 
         # Verify progress was tracked

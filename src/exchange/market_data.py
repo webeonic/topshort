@@ -7,9 +7,10 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 from .binance_client import BinanceClient
+from .symbol_filter import SymbolPreFilter
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,24 @@ logger = logging.getLogger(__name__)
 class MarketData:
     """Market data analyzer."""
 
-    def __init__(self, client: BinanceClient):
+    def __init__(
+        self,
+        client: BinanceClient,
+        prefilter_min_change_pct: float = 10.0,
+        prefilter_min_volume_usdt: float = 100000.0,
+    ):
+        """Initialize MarketData analyzer.
+
+        Args:
+            client: BinanceClient instance for API calls
+            prefilter_min_change_pct: Minimum 24h change % for pre-filtering
+            prefilter_min_volume_usdt: Minimum 24h volume in USDT for pre-filtering
+        """
         self.client = client
+        self.pre_filter = SymbolPreFilter(
+            min_24h_change_pct=prefilter_min_change_pct,
+            min_volume_usdt=prefilter_min_volume_usdt,
+        )
 
     def _calculate_optimal_workers(self, total_symbols: int) -> int:
         """Calculate optimal number of parallel workers dynamically.
@@ -237,6 +254,8 @@ class MarketData:
         top_n: int = 30,
         symbols: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
+        use_prefilter: bool = True,
+        excluded_symbols: Optional[Set[str]] = None,
     ) -> List[Dict]:
         """Scan market for symbols matching criteria using parallel processing.
 
@@ -250,6 +269,8 @@ class MarketData:
             top_n: Number of top results to return
             symbols: Optional explicit list of symbols to analyze
             progress_callback: Optional callback(processed, total, signals_found) for progress updates
+            use_prefilter: Whether to apply pre-filtering to reduce OHLCV API calls (default True)
+            excluded_symbols: Symbols to skip (e.g., already have positions)
 
         Returns: List of top N symbols sorted by score
         """
@@ -258,11 +279,7 @@ class MarketData:
 
         if symbols is None or not symbols:
             symbols = self.client.get_usdt_perpetual_symbols()
-        total_symbols = len(symbols)
-
-        # Calculate optimal number of workers dynamically
-        max_workers = self._calculate_optimal_workers(total_symbols)
-        logger.info(f"Scanning {total_symbols} USDT perpetual symbols with {max_workers} parallel workers")
+        initial_symbol_count = len(symbols)
 
         # Pre-fetch all tickers in batch (much faster than individual calls)
         ticker_start = time.time()
@@ -270,6 +287,26 @@ class MarketData:
         tickers_map = self.client.fetch_tickers(symbols)
         ticker_duration = time.time() - ticker_start
         logger.info(f"Fetched {len(tickers_map)} tickers in batch (took {ticker_duration:.2f}s)")
+
+        # Apply pre-filtering to reduce OHLCV API calls (the main bottleneck)
+        if use_prefilter:
+            filter_start = time.time()
+            symbols = self.pre_filter.filter_for_pump_scan(
+                symbols=symbols,
+                tickers=tickers_map,
+                pump_threshold_pct=pump_threshold,
+                excluded_symbols=excluded_symbols,
+            )
+            filter_duration = time.time() - filter_start
+            logger.info(
+                f"Pre-filter reduced symbols: {initial_symbol_count} -> {len(symbols)} " f"(took {filter_duration:.3f}s)"
+            )
+
+        total_symbols = len(symbols)
+
+        # Calculate optimal number of workers dynamically
+        max_workers = self._calculate_optimal_workers(total_symbols)
+        logger.info(f"Scanning {total_symbols} symbols with {max_workers} parallel workers")
 
         results = []
         processed = 0
