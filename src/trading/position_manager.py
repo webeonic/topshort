@@ -540,9 +540,14 @@ class PositionManager:
             return None
 
     def monitor_positions(self) -> List[Dict]:
-        """Monitor all open positions and close if TP is reached.
+        """Monitor all open positions and sync with exchange.
 
-        Returns: List of closed positions
+        This method ONLY observes positions - it does NOT close them.
+        Positions are closed only by Take Profit limit orders on the exchange.
+        When a position is no longer present on the exchange, we simply
+        remove it from our database.
+
+        Returns: List of positions that were removed (closed on exchange)
         """
         open_positions = self.position_repo.get_all_open()
 
@@ -550,62 +555,68 @@ class PositionManager:
             return []
 
         logger.debug(f"Monitoring {len(open_positions)} open positions")
-        closed = []
+        removed_positions = []
 
-        # Get all symbols for batch ticker fetch
-        symbols = [pos.symbol for pos in open_positions]
+        # Fetch all exchange positions once (single API call instead of N calls)
+        try:
+            exchange_positions = self.client.get_positions()
+        except Exception as e:
+            logger.error(f"Failed to fetch positions from exchange: {e}")
+            return []  # Don't process if API fails - leave all positions intact
 
-        # Batch fetch all tickers (single API call instead of N calls)
-        tickers = self.client.fetch_tickers(symbols)
+        # Build lookup map by symbol for O(1) access
+        exchange_positions_map = {p.get("symbol"): p for p in exchange_positions}
 
         for position in open_positions:
             try:
-                # Get ticker from batch results
-                ticker = tickers.get(position.symbol)
-                if not ticker:
-                    logger.warning(f"Could not get ticker for {position.symbol}")
-                    continue
+                # Convert CCXT symbol (e.g., "BTC/USDT:USDT") to exchange native format (e.g., "BTCUSDT")
+                market = self.client.exchange.market(position.symbol)
+                exchange_symbol = market["id"]
 
-                current_price = ticker["last"]
+                # Look up exchange position by native symbol
+                exchange_position = exchange_positions_map.get(exchange_symbol)
+                position_amt = float(exchange_position.get("positionAmt", 0)) if exchange_position else 0
 
-                # Update current price in database
-                self.position_repo.update_current_price(position.id, current_price)
+                # Determine if our tracked position still exists on exchange
+                # positionAmt: negative = SHORT, positive = LONG, zero = no position
+                position_exists = False
+                if exchange_position and position_amt != 0:
+                    # Check that the side matches: SHORT expects negative, LONG expects positive
+                    if position.side == "short" and position_amt < 0:
+                        position_exists = True
+                    elif position.side == "long" and position_amt > 0:
+                        position_exists = True
+                    # If side doesn't match, position was replaced with opposite direction
 
-                tp_reached = False
-                if position.side == "short":
-                    tp_reached = current_price <= position.take_profit_price
-                else:
-                    tp_reached = current_price >= position.take_profit_price
+                # If position no longer exists on exchange (or was replaced), remove from database
+                if not position_exists:
+                    logger.info(f"Position {position.symbol} no longer exists on exchange. Removing from database.")
 
-                if tp_reached:
-                    logger.info(
-                        f"Take profit reached for {position.symbol}: "
-                        f"Current={current_price:.4f}, TP={position.take_profit_price:.4f}"
-                    )
-                    close_info = self.close_position(position.id, "take_profit")
-                    if close_info:
-                        closed.append(close_info)
-                        continue
+                    # Save info for notification before deletion
+                    position_info = {
+                        "position_id": position.id,
+                        "symbol": position.symbol,
+                        "side": position.side,
+                        "entry_price": position.entry_price,
+                        "quantity": position.quantity,
+                        "take_profit_price": position.take_profit_price,
+                        "reason": "closed_on_exchange",
+                    }
 
-                # Stop-loss monitoring disabled - positions close only on TP or manually
-                # stop_loss_price = position.stop_loss_price
-                # if position.side == "short":
-                #     if stop_loss_price is not None and stop_loss_price > 0:
-                #         sl_reached = current_price >= stop_loss_price
-                # else:
-                #     if stop_loss_price is not None and stop_loss_price > 0:
-                #         sl_reached = current_price <= stop_loss_price
-                # if sl_reached:
-                #     logger.info(...)
-                #     close_info = self.close_position(position.id, "stop_loss")
+                    # Delete position from database
+                    if self.position_repo.delete(position.id):
+                        logger.info(f"Position removed: {position.symbol}")
+                        removed_positions.append(position_info)
+                    else:
+                        logger.warning(f"Failed to delete position {position.symbol} (id={position.id}) from database")
 
             except Exception as e:
                 logger.error(f"Error monitoring position {position.id} ({position.symbol}): {e}")
 
-        if closed:
-            logger.info(f"Closed {len(closed)} positions in this monitoring cycle")
+        if removed_positions:
+            logger.info(f"Removed {len(removed_positions)} positions in this monitoring cycle")
 
-        return closed
+        return removed_positions
 
     def get_all_open_positions(self) -> List[Dict]:
         """Get all open positions with current prices."""

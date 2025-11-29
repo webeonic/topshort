@@ -43,7 +43,12 @@ def mock_client():
     client.get_ticker = Mock()
     client.fetch_tickers = Mock()
     client.get_position_by_symbol = Mock()
+    client.get_positions = Mock(return_value=[])  # Batch fetch for monitor_positions
     client.fetch_order = Mock()
+    # Mock exchange.market() for symbol conversion (CCXT unified -> exchange native)
+    # In tests, symbols are already in native format (e.g., "BTCUSDT"), so return same symbol
+    client.exchange = Mock()
+    client.exchange.market = Mock(side_effect=lambda symbol: {"id": symbol})
     return client
 
 
@@ -603,8 +608,8 @@ class TestMonitorPositions:
         closed = position_manager.monitor_positions()
         assert closed == []
 
-    def test_monitor_positions_tp_reached(self, position_manager, mock_client, db_session):
-        """Test closing position when TP is reached."""
+    def test_monitor_positions_removes_closed_position(self, position_manager, mock_client, db_session):
+        """Test removing position that no longer exists on exchange."""
         # Create open position
         position = Position(
             symbol="BTCUSDT",
@@ -618,23 +623,24 @@ class TestMonitorPositions:
         )
         db_session.add(position)
         db_session.commit()
+        position_id = position.id
 
-        # Mock current price at TP
-        mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 47500.0}}
-        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
-        mock_client.close_short_position.return_value = {"average": 47500.0}
+        # Mock: position no longer exists on exchange (closed by TP)
+        # get_positions returns empty list - no active positions
+        mock_client.get_positions.return_value = []
 
-        closed = position_manager.monitor_positions()
+        removed = position_manager.monitor_positions()
 
-        assert len(closed) == 1
-        assert closed[0]["symbol"] == "BTCUSDT"
+        assert len(removed) == 1
+        assert removed[0]["symbol"] == "BTCUSDT"
+        assert removed[0]["reason"] == "closed_on_exchange"
 
-        # Verify position was closed
-        updated = db_session.query(Position).filter_by(id=position.id).first()
-        assert updated.status == "closed"
+        # Verify position was deleted from DB
+        deleted = db_session.query(Position).filter_by(id=position_id).first()
+        assert deleted is None
 
-    def test_monitor_positions_tp_not_reached(self, position_manager, mock_client, db_session):
-        """Test position stays open when TP not reached."""
+    def test_monitor_positions_keeps_open_position(self, position_manager, mock_client, db_session):
+        """Test that position stays when it still exists on exchange."""
         position = Position(
             symbol="BTCUSDT",
             entry_price=50000.0,
@@ -648,20 +654,21 @@ class TestMonitorPositions:
         db_session.add(position)
         db_session.commit()
 
-        # Mock current price above TP
-        mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 49000.0}}
+        # Mock: position still exists on exchange (batch fetch)
+        mock_client.get_positions.return_value = [{"symbol": "BTCUSDT", "positionAmt": "-0.1"}]
 
-        closed = position_manager.monitor_positions()
+        removed = position_manager.monitor_positions()
 
-        assert len(closed) == 0
+        # No positions should be removed
+        assert len(removed) == 0
 
-        # Verify position still open but price updated
-        updated = db_session.query(Position).filter_by(id=position.id).first()
-        assert updated.status == "open"
-        assert updated.current_price == 49000.0
+        # Verify position still exists
+        existing = db_session.query(Position).filter_by(id=position.id).first()
+        assert existing is not None
+        assert existing.status == "open"
 
     def test_monitor_multiple_positions(self, position_manager, mock_client, db_session):
-        """Test monitoring multiple positions."""
+        """Test monitoring multiple positions - only removes those closed on exchange."""
         # Create two positions
         pos1 = Position(
             symbol="BTCUSDT",
@@ -686,48 +693,206 @@ class TestMonitorPositions:
         db_session.add(pos1)
         db_session.add(pos2)
         db_session.commit()
+        pos1_id = pos1.id
+        pos2_id = pos2.id
 
-        # Mock BTC at TP, ETH above TP
-        mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 47500.0}, "ETHUSDT": {"last": 2900.0}}
-        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
-        mock_client.close_short_position.return_value = {"average": 47500.0}
+        # Mock: BTC closed on exchange (not in list), ETH still open
+        # Batch fetch returns only ETH position
+        mock_client.get_positions.return_value = [{"symbol": "ETHUSDT", "positionAmt": "-1.0"}]
 
-        closed = position_manager.monitor_positions()
+        removed = position_manager.monitor_positions()
 
-        # Only BTC should be closed
-        assert len(closed) == 1
-        assert closed[0]["symbol"] == "BTCUSDT"
+        # Only BTC should be removed
+        assert len(removed) == 1
+        assert removed[0]["symbol"] == "BTCUSDT"
+        assert removed[0]["reason"] == "closed_on_exchange"
 
-    def test_monitor_positions_batch_ticker_fetch(self, position_manager, mock_client, db_session):
-        """Test that tickers are fetched in batch."""
+        # Verify BTC deleted, ETH still exists
+        assert db_session.query(Position).filter_by(id=pos1_id).first() is None
+        assert db_session.query(Position).filter_by(id=pos2_id).first() is not None
+
+    def test_monitor_positions_delete_fails(self, position_manager, mock_client, db_session):
+        """Test that position is not reported as removed if delete fails."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Mock: position no longer exists on exchange (batch fetch returns empty)
+        mock_client.get_positions.return_value = []
+
+        # Mock: delete returns False (e.g., race condition - already deleted)
+        position_manager.position_repo.delete = lambda x: False
+
+        removed = position_manager.monitor_positions()
+
+        # Should NOT report position as removed since delete failed
+        assert len(removed) == 0
+
+    def test_monitor_positions_api_error_does_not_delete(self, position_manager, mock_client, db_session):
+        """Test that API errors don't cause position deletion.
+
+        This is a critical test: if get_positions() raises an exception
+        (network error, rate limit, etc.), we should NOT delete any positions.
+        The method returns early, leaving all positions intact.
+        """
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+        position_id = position.id
+
+        # Mock: batch API call raises an exception (network error, rate limit, etc.)
+        mock_client.get_positions.side_effect = Exception("Network timeout")
+
+        removed = position_manager.monitor_positions()
+
+        # Should NOT remove any positions when API fails
+        assert len(removed) == 0
+
+        # Position should still exist in database
+        existing = db_session.query(Position).filter_by(id=position_id).first()
+        assert existing is not None
+        assert existing.status == "open"
+
+    def test_monitor_positions_batch_fetch(self, position_manager, mock_client, db_session):
+        """Test that positions are fetched in a single batch API call.
+
+        This verifies efficiency: instead of N API calls for N positions,
+        we make one get_positions() call and use the result for all positions.
+        """
         # Create multiple positions
         for i in range(3):
             db_session.add(
                 Position(
-                    symbol=f"BTC{i}",
-                    entry_price=50000.0,
-                    current_price=50000.0,
+                    symbol=f"COIN{i}USDT",
+                    entry_price=1000.0,
+                    current_price=1000.0,
                     quantity=0.1,
                     margin=100.0,
                     leverage=20,
-                    take_profit_price=47500.0,
+                    take_profit_price=950.0,
                     status="open",
                 )
             )
         db_session.commit()
 
-        mock_client.fetch_tickers.return_value = {
-            "BTC0": {"last": 49000.0},
-            "BTC1": {"last": 49000.0},
-            "BTC2": {"last": 49000.0},
-        }
+        # Mock: all positions still open on exchange
+        mock_client.get_positions.return_value = [
+            {"symbol": "COIN0USDT", "positionAmt": "-0.1"},
+            {"symbol": "COIN1USDT", "positionAmt": "-0.1"},
+            {"symbol": "COIN2USDT", "positionAmt": "-0.1"},
+        ]
 
         position_manager.monitor_positions()
 
-        # Verify single batch call was made
-        mock_client.fetch_tickers.assert_called_once()
-        call_args = mock_client.fetch_tickers.call_args[0][0]
-        assert len(call_args) == 3
+        # Verify single batch call was made (not 3 separate calls)
+        mock_client.get_positions.assert_called_once()
+
+    def test_monitor_positions_removes_when_side_changed(self, position_manager, mock_client, db_session):
+        """Test that position is removed when user manually reversed the position.
+
+        Scenario:
+        1. Bot tracks SHORT position for BTCUSDT in database
+        2. User manually closes SHORT and opens LONG on exchange
+        3. Exchange returns positive positionAmt (indicating LONG)
+        4. Bot should recognize SHORT no longer exists and remove from database
+        """
+        # Create SHORT position in database
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            side="short",  # DB tracks SHORT
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+        position_id = position.id
+
+        # Mock: exchange now has LONG position (positive positionAmt)
+        # User manually closed SHORT and opened LONG
+        mock_client.get_positions.return_value = [{"symbol": "BTCUSDT", "positionAmt": "0.1"}]  # Positive = LONG
+
+        removed = position_manager.monitor_positions()
+
+        # SHORT should be removed because exchange has LONG (side mismatch)
+        assert len(removed) == 1
+        assert removed[0]["symbol"] == "BTCUSDT"
+        assert removed[0]["side"] == "short"
+        assert removed[0]["reason"] == "closed_on_exchange"
+
+        # Verify position was deleted from DB
+        assert db_session.query(Position).filter_by(id=position_id).first() is None
+
+    def test_monitor_positions_keeps_matching_side(self, position_manager, mock_client, db_session):
+        """Test that position is kept when side matches on exchange.
+
+        Verifies that the side-checking logic doesn't accidentally
+        remove valid positions.
+        """
+        # Create SHORT position
+        short_pos = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            side="short",
+            status="open",
+        )
+        # Create LONG position
+        long_pos = Position(
+            symbol="ETHUSDT",
+            entry_price=3000.0,
+            current_price=3000.0,
+            quantity=1.0,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=3150.0,
+            side="long",
+            status="open",
+        )
+        db_session.add(short_pos)
+        db_session.add(long_pos)
+        db_session.commit()
+
+        # Mock: exchange has matching sides (batch fetch)
+        mock_client.get_positions.return_value = [
+            {"symbol": "BTCUSDT", "positionAmt": "-0.1"},  # Negative = SHORT (matches DB)
+            {"symbol": "ETHUSDT", "positionAmt": "1.0"},  # Positive = LONG (matches DB)
+        ]
+
+        removed = position_manager.monitor_positions()
+
+        # No positions should be removed - both sides match
+        assert len(removed) == 0
+
+        # Both positions should still exist
+        assert db_session.query(Position).filter_by(id=short_pos.id).first() is not None
+        assert db_session.query(Position).filter_by(id=long_pos.id).first() is not None
 
 
 class TestGetAllOpenPositions:

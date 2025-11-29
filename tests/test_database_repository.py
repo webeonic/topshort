@@ -225,6 +225,95 @@ class TestPositionRepository:
 
         assert result is None
 
+    def test_delete_position(self, db_session):
+        """Test deleting a position."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+        position_id = position.id
+
+        repo = PositionRepository(db_session)
+        result = repo.delete(position_id)
+
+        assert result is True
+        assert repo.get(position_id) is None
+
+    def test_delete_nonexistent_position(self, db_session):
+        """Test deleting position that doesn't exist."""
+        repo = PositionRepository(db_session)
+        result = repo.delete(99999)
+
+        assert result is False
+
+    def test_delete_position_with_limit_orders(self, db_session):
+        """Test deleting position also deletes associated limit orders (cascade)."""
+        # Create position
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+        position_id = position.id
+
+        # Create associated limit orders
+        order1 = LimitOrder(
+            position_id=position_id,
+            order_id="TP_ORDER_123",
+            symbol="BTCUSDT",
+            order_type="take_profit",
+            side="buy",
+            price=47500.0,
+            quantity=0.1,
+        )
+        order2 = LimitOrder(
+            position_id=position_id,
+            order_id="SL_ORDER_456",
+            symbol="BTCUSDT",
+            order_type="stop_loss",
+            side="buy",
+            price=52500.0,
+            quantity=0.1,
+        )
+        db_session.add(order1)
+        db_session.add(order2)
+        db_session.commit()
+
+        # Verify orders exist before deletion
+        orders_before = db_session.query(LimitOrder).filter_by(position_id=position_id).all()
+        assert len(orders_before) == 2
+
+        # Delete position
+        repo = PositionRepository(db_session)
+        result = repo.delete(position_id)
+
+        # Assert position deleted
+        assert result is True
+        assert repo.get(position_id) is None
+
+        # Assert associated limit orders were cascade-deleted
+        orders_after = db_session.query(LimitOrder).filter_by(position_id=position_id).all()
+        assert len(orders_after) == 0
+
+        # Also verify by order_id that orders don't exist anymore
+        assert db_session.query(LimitOrder).filter_by(order_id="TP_ORDER_123").first() is None
+        assert db_session.query(LimitOrder).filter_by(order_id="SL_ORDER_456").first() is None
+
     def test_get_by_symbol(self, db_session):
         """Test getting position by symbol."""
         position = Position(

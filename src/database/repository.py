@@ -225,6 +225,20 @@ class PositionRepository:
         self.session.commit()
         return position
 
+    @db_retry
+    def delete(self, position_id: int) -> bool:
+        """Delete position from database.
+
+        Used when position no longer exists on exchange.
+        """
+        position = self.get(position_id)
+        if not position:
+            return False
+
+        self.session.delete(position)
+        self.session.commit()
+        return True
+
     def count_open(self) -> int:
         """Count open positions."""
         return self.session.query(Position).filter_by(status="open").count()
