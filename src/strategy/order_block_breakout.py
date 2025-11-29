@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import math
 import os
+import time as time_module
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
-from typing import Callable, Dict, List, Optional, TypedDict
+from typing import Callable, Dict, List, Optional, Tuple, TypedDict
 
 import pandas as pd
 
@@ -34,6 +35,21 @@ TIMEFRAME_TO_MINUTES = {
 
 MAX_CANDLES_PER_REQUEST = 1500
 TIMEFRAME_WORKER_CAP = 16
+
+# Adaptive lookback months per timeframe for Order Block detection
+# Higher timeframes need more history for trend detection,
+# Lower timeframes need less for OB/FVG detection
+TIMEFRAME_LOOKBACK_MONTHS: Dict[str, float] = {
+    "1d": 6.0,  # 6 months - long-term trend
+    "4h": 3.0,  # 3 months - medium-term trend
+    "1h": 1.5,  # 1.5 months - short-term trend
+    "15m": 0.5,  # 2 weeks - OB detection
+    "5m": 0.25,  # 1 week - confirmation
+}
+
+# Batch prefetch configuration
+PREFETCH_BATCH_SIZE = 15  # Concurrent requests per batch
+PREFETCH_BATCH_DELAY_MS = 500  # Delay between batches (ms)
 
 # Minimum TP distance as percentage of entry price to cover trading fees
 MIN_TP_PERCENT = 0.1  # 0.1% minimum to cover ~0.06% round-trip fees + buffer
@@ -191,23 +207,43 @@ class OrderBlockBreakoutStrategy:
         top_n: int = 10,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
         max_workers: Optional[int] = None,
+        use_batch_prefetch: bool = True,
     ) -> List[OrderBlockSignal]:
-        """Scan multiple symbols in parallel."""
+        """Scan multiple symbols in parallel.
+
+        Args:
+            symbols: List of symbols to scan
+            top_n: Maximum number of signals to return
+            progress_callback: Optional callback(processed, total, signals_found)
+            max_workers: Override for max parallel workers
+            use_batch_prefetch: If True, prefetch all OHLCV data first (faster)
+
+        Returns:
+            List of OrderBlockSignal sorted by score descending
+        """
         if not symbols:
             return []
 
         workers = self._determine_symbol_workers(len(symbols), max_workers)
         logger.info(
-            "Scanning %s symbols for order block setups with %s workers (limit=%s)",
+            "Scanning %d symbols for order block setups (workers=%d, prefetch=%s)",
             len(symbols),
             workers,
-            max_workers or self.config.max_workers,
+            use_batch_prefetch,
         )
+
+        # Prefetch all OHLCV data upfront for better throughput
+        prefetched_data: Dict[str, Dict[str, pd.DataFrame]] = {}
+        if use_batch_prefetch:
+            prefetched_data = self._prefetch_ohlcv_batch(symbols)
 
         results: List[OrderBlockSignal] = []
         processed = 0
 
         def analyze_symbol(sym: str) -> OrderBlockSignal:
+            # Use prefetched data if available, otherwise load on demand
+            if sym in prefetched_data and prefetched_data[sym]:
+                return self.analyze_from_datasets(sym, prefetched_data[sym])
             return self.analyze(sym)
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -238,12 +274,11 @@ class OrderBlockBreakoutStrategy:
             return datasets
 
         def fetch_timeframe(tf: str) -> tuple[str, Optional[pd.DataFrame]]:
-            tf_minutes = TIMEFRAME_TO_MINUTES.get(tf)
-            if not tf_minutes:
+            if tf not in TIMEFRAME_TO_MINUTES:
                 logger.warning("Unsupported timeframe '%s' in config", tf)
                 return tf, None
 
-            candles_needed = self._candles_for_timeframe(tf_minutes)
+            candles_needed = self._candles_for_timeframe(tf)
             try:
                 ohlcv = self.market_data.client.get_ohlcv(symbol, timeframe=tf, limit=candles_needed)
             except Exception as exc:  # pragma: no cover - network guard
@@ -279,6 +314,81 @@ class OrderBlockBreakoutStrategy:
 
         return datasets
 
+    def _prefetch_ohlcv_batch(
+        self,
+        symbols: List[str],
+        batch_size: int = PREFETCH_BATCH_SIZE,
+        batch_delay_ms: int = PREFETCH_BATCH_DELAY_MS,
+    ) -> Dict[str, Dict[str, pd.DataFrame]]:
+        """Prefetch OHLCV data for all symbols and timeframes in parallel batches.
+
+        Loads all (symbol, timeframe) combinations in parallel with rate limit control.
+        Results are cached by BinanceClient for subsequent access.
+
+        Args:
+            symbols: List of symbols to prefetch
+            batch_size: Number of concurrent requests per batch
+            batch_delay_ms: Delay between batches in milliseconds
+
+        Returns:
+            Dict mapping symbol -> {timeframe -> DataFrame}
+        """
+        if not symbols:
+            return {}
+
+        timeframes = list(self.config.timeframes)
+        if not timeframes:
+            return {}
+
+        # Build all (symbol, timeframe, limit) tasks
+        tasks: List[Tuple[str, str, int]] = []
+        for symbol in symbols:
+            for tf in timeframes:
+                if tf in TIMEFRAME_TO_MINUTES:
+                    limit = self._candles_for_timeframe(tf)
+                    tasks.append((symbol, tf, limit))
+
+        logger.info(
+            "Prefetching OHLCV: %d symbols × %d timeframes = %d requests (batch=%d)",
+            len(symbols),
+            len(timeframes),
+            len(tasks),
+            batch_size,
+        )
+
+        results: Dict[str, Dict[str, pd.DataFrame]] = {s: {} for s in symbols}
+
+        def fetch_one(task: Tuple[str, str, int]) -> Tuple[str, str, Optional[pd.DataFrame]]:
+            symbol, tf, limit = task
+            try:
+                ohlcv = self.market_data.client.get_ohlcv(symbol, timeframe=tf, limit=limit)
+                if ohlcv and len(ohlcv) >= max(self.config.swing_length * 4, 50):
+                    return symbol, tf, self._to_dataframe(ohlcv)
+                return symbol, tf, None
+            except Exception as exc:
+                logger.debug("Prefetch failed %s %s: %s", symbol, tf, exc)
+                return symbol, tf, None
+
+        # Process in batches
+        for batch_start in range(0, len(tasks), batch_size):
+            batch = tasks[batch_start : batch_start + batch_size]
+
+            with ThreadPoolExecutor(max_workers=len(batch)) as executor:
+                futures = [executor.submit(fetch_one, t) for t in batch]
+                for future in as_completed(futures):
+                    symbol, tf, df = future.result()
+                    if df is not None:
+                        results[symbol][tf] = df
+
+            # Delay between batches to respect rate limits
+            if batch_start + batch_size < len(tasks) and batch_delay_ms > 0:
+                time_module.sleep(batch_delay_ms / 1000.0)
+
+        successful = sum(len(tfs) for tfs in results.values())
+        logger.info("Prefetch complete: %d/%d datasets loaded", successful, len(tasks))
+
+        return results
+
     @staticmethod
     def _to_dataframe(ohlcv: List[List]) -> pd.DataFrame:
         df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -287,8 +397,25 @@ class OrderBlockBreakoutStrategy:
         df[numeric_cols] = df[numeric_cols].astype(float)
         return df
 
-    def _candles_for_timeframe(self, tf_minutes: int) -> int:
-        total_minutes = self.config.lookback_months * 30 * 24 * 60
+    def _candles_for_timeframe(self, timeframe: str) -> int:
+        """Calculate optimal candle count using adaptive lookback per timeframe.
+
+        Uses shorter lookback periods for lower timeframes since they don't need
+        6 months of data for Order Block detection. Falls back to config.lookback_months
+        for unmapped timeframes.
+
+        Args:
+            timeframe: Timeframe string (e.g., "1h", "15m")
+
+        Returns:
+            Number of candles to fetch, capped at MAX_CANDLES_PER_REQUEST.
+        """
+        tf_minutes = TIMEFRAME_TO_MINUTES.get(timeframe)
+        if not tf_minutes:
+            return self.config.swing_length * 5
+
+        lookback_months = TIMEFRAME_LOOKBACK_MONTHS.get(timeframe, self.config.lookback_months)
+        total_minutes = lookback_months * 30 * 24 * 60
         candles = math.ceil(total_minutes / tf_minutes)
         return min(max(candles, self.config.swing_length * 5), MAX_CANDLES_PER_REQUEST)
 
