@@ -6,12 +6,12 @@ import time
 from typing import Optional
 
 from telegram import Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, filters
 from telegram.helpers import escape_markdown
 
 from ..config import ConcurrencyConfig, TelegramConfig
 from .callback_handler import CallbackHandler
-from .commands import BotCommands
+from .commands import BotCommands, is_user_authorized
 from .keyboard_builder import KeyboardBuilder, PersistentMenu
 from .keyboard_init import init_keyboard_templates
 from .menu_handler import MenuButtonHandler
@@ -23,6 +23,31 @@ logger = logging.getLogger(__name__)
 # Telegram allows ~30 messages per second, we use conservative limits
 RATE_LIMIT_MESSAGES = 20  # Max messages per window
 RATE_LIMIT_WINDOW_SECONDS = 1.0  # Window size in seconds
+
+
+class AuthorizedUserFilter(filters.MessageFilter):
+    """Filter that only allows messages from authorized users.
+
+    This filter checks both username and user_id for authorization.
+    Users not in AUTHORIZED_USERNAMES or AUTHORIZED_USERS will be blocked.
+    """
+
+    def filter(self, message) -> bool:
+        """Check if message sender is authorized.
+
+        Args:
+            message: Telegram message object
+
+        Returns:
+            True if user is authorized, False otherwise
+        """
+        if not message or not message.from_user:
+            return False
+        return is_user_authorized(message.from_user)
+
+
+# Global filter instance for authorized users
+AUTHORIZED_USER_FILTER = AuthorizedUserFilter()
 
 
 class TelegramBot:
@@ -72,23 +97,25 @@ class TelegramBot:
         app = Application.builder().token(self.config.bot_token).build()
         self.application = app
 
-        # Register command handlers
-        app.add_handler(CommandHandler("start", self.commands.start))
-        app.add_handler(CommandHandler("status", self.commands.status))
-        app.add_handler(CommandHandler("positions", self.commands.positions))
-        app.add_handler(CommandHandler("history", self.commands.history))
-        app.add_handler(CommandHandler("stats", self.commands.stats))
-        app.add_handler(CommandHandler("settings", self.commands.settings))
-        app.add_handler(CommandHandler("set", self.commands.set_setting))
-        app.add_handler(CommandHandler("pause", self.commands.pause))
-        app.add_handler(CommandHandler("resume", self.commands.resume))
-        app.add_handler(CommandHandler("scan", self.commands.scan))
-        app.add_handler(CommandHandler("pairs", self.commands.top_pairs))
-        app.add_handler(CommandHandler("top_pairs", self.commands.top_pairs))
-        app.add_handler(CommandHandler("close", self.commands.close))
-        app.add_handler(CommandHandler("closeall", self.commands.closeall))
-        app.add_handler(CommandHandler("help", self.commands.start))
-        app.add_handler(CommandHandler("menu", self.commands.show_menu))
+        # Register command handlers with global authorization filter
+        # All commands require user to be in AUTHORIZED_USERNAMES or AUTHORIZED_USERS
+        auth_filter = AUTHORIZED_USER_FILTER
+        app.add_handler(CommandHandler("start", self.commands.start, filters=auth_filter))
+        app.add_handler(CommandHandler("status", self.commands.status, filters=auth_filter))
+        app.add_handler(CommandHandler("positions", self.commands.positions, filters=auth_filter))
+        app.add_handler(CommandHandler("history", self.commands.history, filters=auth_filter))
+        app.add_handler(CommandHandler("stats", self.commands.stats, filters=auth_filter))
+        app.add_handler(CommandHandler("settings", self.commands.settings, filters=auth_filter))
+        app.add_handler(CommandHandler("set", self.commands.set_setting, filters=auth_filter))
+        app.add_handler(CommandHandler("pause", self.commands.pause, filters=auth_filter))
+        app.add_handler(CommandHandler("resume", self.commands.resume, filters=auth_filter))
+        app.add_handler(CommandHandler("scan", self.commands.scan, filters=auth_filter))
+        app.add_handler(CommandHandler("pairs", self.commands.top_pairs, filters=auth_filter))
+        app.add_handler(CommandHandler("top_pairs", self.commands.top_pairs, filters=auth_filter))
+        app.add_handler(CommandHandler("close", self.commands.close, filters=auth_filter))
+        app.add_handler(CommandHandler("closeall", self.commands.closeall, filters=auth_filter))
+        app.add_handler(CommandHandler("help", self.commands.start, filters=auth_filter))
+        app.add_handler(CommandHandler("menu", self.commands.show_menu, filters=auth_filter))
 
         # Register callback query handler for inline keyboards
         app.add_handler(CallbackQueryHandler(self.callback_handler.handle_callback))

@@ -372,6 +372,71 @@ class PositionManager:
         except (json.JSONDecodeError, TypeError):
             return None
 
+    def _sync_closed_position(
+        self,
+        position,
+        position_id: int,
+        reason: str,
+        strategy: Optional[str],
+    ) -> Dict:
+        """Sync a position that was already closed on exchange.
+
+        This method handles the case when a position no longer exists on exchange
+        (closed manually, by TP/SL order, or liquidated) and needs to be synced
+        in the database.
+
+        Args:
+            position: Position object from database
+            position_id: Position ID
+            reason: Original close reason (will be suffixed with '_sync')
+            strategy: Strategy name extracted from metadata
+
+        Returns:
+            Dict with position close information
+        """
+        # Try to get exit price from TP order if it was filled
+        exit_price = None
+        if position.take_profit_order_id:
+            tp_order = self.client.fetch_order(position.take_profit_order_id, position.symbol)
+            if tp_order:
+                order_status = tp_order.get("status", "").lower()
+                if order_status in ("closed", "filled"):
+                    exit_price = tp_order.get("average")
+                    if exit_price:
+                        logger.info(f"Got TP order fill price for {position.symbol}: {exit_price:.4f}")
+
+        # Fallback to current price if TP order price not available
+        if not exit_price:
+            ticker = self.client.get_ticker(position.symbol)
+            exit_price = ticker["last"] if ticker else position.current_price
+            logger.debug(f"Using current market price for {position.symbol}: {exit_price}")
+
+        # Close position in database with reason indicating it was already closed
+        sync_reason = f"{reason}_sync"
+        closed_position = self.position_repo.close(position_id, exit_price, sync_reason)
+
+        # Update bot statistics
+        self.bot_status_repo.increment_closed(closed_position.pnl)
+
+        logger.info(
+            f"Position synced: {position.symbol}, "
+            f"Entry={position.entry_price:.4f}, "
+            f"Exit={exit_price:.4f}, "
+            f"P&L={closed_position.pnl:.2f} USDT ({closed_position.pnl_pct:.2f}%)"
+        )
+
+        return {
+            "position_id": position_id,
+            "symbol": position.symbol,
+            "entry_price": position.entry_price,
+            "exit_price": exit_price,
+            "pnl": closed_position.pnl,
+            "pnl_pct": closed_position.pnl_pct,
+            "reason": sync_reason,
+            "synced": True,
+            "strategy": strategy,
+        }
+
     def close_position(self, position_id: int, reason: str = "take_profit") -> Optional[Dict]:
         """Close an open position.
 
@@ -405,48 +470,7 @@ class PositionManager:
                     f"Position {position_id} ({position.symbol}) not found on exchange - "
                     f"likely already closed manually or by limit order. Syncing database..."
                 )
-
-                # Try to get exit price from TP order if it was filled
-                exit_price = None
-                if position.take_profit_order_id:
-                    tp_order = self.client.fetch_order(position.take_profit_order_id, position.symbol)
-                    if tp_order:
-                        order_status = tp_order.get("status", "").lower()
-                        if order_status in ("closed", "filled"):
-                            exit_price = tp_order.get("average")
-                            if exit_price:
-                                logger.info(f"Got TP order fill price for {position.symbol}: {exit_price:.4f}")
-
-                # Fallback to current price if TP order price not available
-                if not exit_price:
-                    ticker = self.client.get_ticker(position.symbol)
-                    exit_price = ticker["last"] if ticker else position.current_price
-                    logger.debug(f"Using current market price for {position.symbol}: {exit_price}")
-
-                # Close position in database with reason indicating it was already closed
-                closed_position = self.position_repo.close(position_id, exit_price, f"{reason}_sync")
-
-                # Update bot statistics
-                self.bot_status_repo.increment_closed(closed_position.pnl)
-
-                logger.info(
-                    f"Position synced: {position.symbol}, "
-                    f"Entry={position.entry_price:.4f}, "
-                    f"Exit={exit_price:.4f}, "
-                    f"P&L={closed_position.pnl:.2f} USDT ({closed_position.pnl_pct:.2f}%)"
-                )
-
-                return {
-                    "position_id": position_id,
-                    "symbol": position.symbol,
-                    "entry_price": position.entry_price,
-                    "exit_price": exit_price,
-                    "pnl": closed_position.pnl,
-                    "pnl_pct": closed_position.pnl_pct,
-                    "reason": f"{reason}_sync",
-                    "synced": True,
-                    "strategy": strategy,
-                }
+                return self._sync_closed_position(position, position_id, reason, strategy)
 
             # Close position on exchange
             if position.side == "long":
@@ -461,48 +485,7 @@ class PositionManager:
             # Check if order indicates position was already closed (error code -2022)
             if isinstance(order, dict) and order.get("error_code") == -2022:
                 logger.warning(f"Position {position_id} ({position.symbol}) already closed on exchange. Syncing database...")
-
-                # Try to get exit price from TP order if it was filled
-                exit_price = None
-                if position.take_profit_order_id:
-                    tp_order = self.client.fetch_order(position.take_profit_order_id, position.symbol)
-                    if tp_order:
-                        order_status = tp_order.get("status", "").lower()
-                        if order_status in ("closed", "filled"):
-                            exit_price = tp_order.get("average")
-                            if exit_price:
-                                logger.info(f"Got TP order fill price for {position.symbol}: {exit_price:.4f}")
-
-                # Fallback to current price if TP order price not available
-                if not exit_price:
-                    ticker = self.client.get_ticker(position.symbol)
-                    exit_price = ticker["last"] if ticker else position.current_price
-                    logger.debug(f"Using current market price for {position.symbol}: {exit_price}")
-
-                # Close position in database
-                closed_position = self.position_repo.close(position_id, exit_price, f"{reason}_sync")
-
-                # Update bot statistics
-                self.bot_status_repo.increment_closed(closed_position.pnl)
-
-                logger.info(
-                    f"Position synced: {position.symbol}, "
-                    f"Entry={position.entry_price:.4f}, "
-                    f"Exit={exit_price:.4f}, "
-                    f"P&L={closed_position.pnl:.2f} USDT ({closed_position.pnl_pct:.2f}%)"
-                )
-
-                return {
-                    "position_id": position_id,
-                    "symbol": position.symbol,
-                    "entry_price": position.entry_price,
-                    "exit_price": exit_price,
-                    "pnl": closed_position.pnl,
-                    "pnl_pct": closed_position.pnl_pct,
-                    "reason": f"{reason}_sync",
-                    "synced": True,
-                    "strategy": strategy,
-                }
+                return self._sync_closed_position(position, position_id, reason, strategy)
 
             # Get exit price from order
             exit_price = float(order.get("average", 0) or order.get("price", 0))

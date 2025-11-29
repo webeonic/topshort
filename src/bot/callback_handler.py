@@ -15,6 +15,7 @@ from ..database.repository import CallbackLogRepository, KeyboardStateRepository
 from ..trading.engine import TradingEngine
 from ..utils.async_executor import run_blocking
 from . import commands as bot_commands_module
+from .commands import is_user_authorized
 from .keyboard_builder import InlineTemplates, KeyboardBuilder, callback_registry
 from .scan_queue import ScanQueueManager
 
@@ -162,8 +163,24 @@ class CallbackHandler:
         before routing, ensuring pattern matching and data extraction work
         correctly even when callback_data was truncated due to Telegram's
         64-byte limit.
+
+        Authorization check is performed first - unauthorized users are blocked.
         """
         query = update.callback_query
+
+        # Authorization check - block unauthorized users
+        user = query.from_user
+        if not is_user_authorized(user):
+            user_id = str(user.id) if user else "unknown"
+            username = user.username or "unknown" if user else "unknown"
+            logger.warning(
+                f"SECURITY: Unauthorized callback attempt - "
+                f"User ID: {user_id}, Username: @{username}, "
+                f"Callback: {query.data}"
+            )
+            await query.answer("❌ Access denied", show_alert=True)
+            return
+
         await query.answer()
 
         raw_callback_data = query.data

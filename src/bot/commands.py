@@ -38,8 +38,46 @@ from .scan_queue import ScanQueueFullError, ScanQueueItem, ScanQueueManager
 
 logger = logging.getLogger(__name__)
 
-# Load authorized users from environment
+# Load authorized users from environment (by user_id)
 AUTHORIZED_USERS = set(user_id.strip() for user_id in os.getenv("TELEGRAM_AUTHORIZED_USERS", "").split(",") if user_id.strip())
+
+# Load authorized usernames from environment (by username, case-insensitive)
+# Default fallback: webeonic (bot owner)
+AUTHORIZED_USERNAMES = set(
+    username.strip().lower()
+    for username in os.getenv("TELEGRAM_AUTHORIZED_USERNAMES", "webeonic").split(",")
+    if username.strip()
+)
+
+
+def is_user_authorized(user) -> bool:
+    """Check if user is authorized by username or user_id.
+
+    Authorization is granted if:
+    - User's username (case-insensitive) is in AUTHORIZED_USERNAMES, OR
+    - User's ID is in AUTHORIZED_USERS
+
+    Args:
+        user: Telegram User object
+
+    Returns:
+        True if user is authorized, False otherwise
+    """
+    if not user:
+        return False
+
+    username = (user.username or "").lower()
+    user_id = str(user.id)
+
+    # Check username first (primary auth method)
+    if username and username in AUTHORIZED_USERNAMES:
+        return True
+
+    # Fallback to user_id
+    if user_id in AUTHORIZED_USERS:
+        return True
+
+    return False
 
 
 class AuditLogger:
@@ -93,14 +131,18 @@ ALLOWED_SETTINGS: Dict[str, SettingConfig] = {
 
 
 def require_auth(func):
-    """Decorator to require authentication for sensitive commands."""
+    """Decorator to require authentication for sensitive commands.
+
+    Uses is_user_authorized() to check both username and user_id.
+    """
 
     @wraps(func)
     async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user_id = str(update.effective_user.id)
-        username = update.effective_user.username or "unknown"
+        user = update.effective_user
+        user_id = str(user.id) if user else "unknown"
+        username = user.username or "unknown" if user else "unknown"
 
-        if not AUTHORIZED_USERS or user_id not in AUTHORIZED_USERS:
+        if not is_user_authorized(user):
             logger.warning(
                 f"SECURITY: Unauthorized access attempt - "
                 f"User ID: {user_id}, Username: @{username}, "
@@ -216,8 +258,8 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in status command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in status command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     def _format_strategy_label(self, strategy: str | None) -> str:
         """Format strategy name for display."""
@@ -266,8 +308,8 @@ class BotCommands:
                 await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in positions command: {e}")
-            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
+            logger.error(f"Error in positions command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     async def history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /history command."""
@@ -297,8 +339,8 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in history command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in history command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command."""
@@ -326,8 +368,8 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in stats command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in stats command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     async def top_pairs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /pairs command to show current trading universe."""
@@ -368,8 +410,8 @@ class BotCommands:
             await update.effective_message.reply_text(header + "\n" + body + footer, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in pairs command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in pairs command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     async def settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /settings command.
@@ -393,8 +435,8 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
         except Exception as e:
-            logger.error(f"Error in settings command: {e}")
-            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
+            logger.error(f"Error in settings command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     @require_auth
     async def set_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -458,8 +500,8 @@ class BotCommands:
                 )
 
         except Exception as e:
-            logger.error(f"Error in set command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in set command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     @require_auth
     async def pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,8 +511,8 @@ class BotCommands:
             await update.effective_message.reply_text("⏸️ Trading paused")
 
         except Exception as e:
-            logger.error(f"Error in pause command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in pause command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     @require_auth
     async def resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,8 +522,8 @@ class BotCommands:
             await update.effective_message.reply_text("▶️ Trading resumed")
 
         except Exception as e:
-            logger.error(f"Error in resume command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in resume command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     def _format_progress_bar(self, progress_pct: float, width: int = 20) -> str:
         """Format a progress bar for Telegram.
@@ -771,7 +813,7 @@ class BotCommands:
                 await update.effective_message.reply_text("❌ Очередь сканов переполнена, попробуйте позже.")
         except Exception as e:
             logger.error(f"Error in scan command: {e}", exc_info=True)
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     @require_auth
     async def close(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -801,8 +843,8 @@ class BotCommands:
                 await update.effective_message.reply_text(f"❌ Failed to close position {symbol}")
 
         except Exception as e:
-            logger.error(f"Error in close command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in close command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     @require_auth
     async def closeall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -825,8 +867,8 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown")
 
         except Exception as e:
-            logger.error(f"Error in closeall command: {e}")
-            await update.effective_message.reply_text(f"❌ Error: {e}")
+            logger.error(f"Error in closeall command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     async def show_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /menu command - show trading controls menu.
@@ -854,8 +896,8 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
         except Exception as e:
-            logger.error(f"Error in show_menu command: {e}")
-            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
+            logger.error(f"Error in show_menu command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
 
     async def show_scan_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show scan strategy selection menu.
@@ -877,5 +919,5 @@ class BotCommands:
             await update.effective_message.reply_text(message, parse_mode="Markdown", reply_markup=keyboard)
 
         except Exception as e:
-            logger.error(f"Error in show_scan_menu command: {e}")
-            await update.effective_message.reply_text(f"❌ Ошибка: {e}")
+            logger.error(f"Error in show_scan_menu command: {e}", exc_info=True)
+            await update.effective_message.reply_text("❌ An error occurred. Please try again.")
