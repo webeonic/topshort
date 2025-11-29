@@ -603,8 +603,8 @@ class TestMonitorPositions:
         closed = position_manager.monitor_positions()
         assert closed == []
 
-    def test_monitor_positions_tp_reached(self, position_manager, mock_client, db_session):
-        """Test closing position when TP is reached."""
+    def test_monitor_positions_removes_closed_position(self, position_manager, mock_client, db_session):
+        """Test removing position that no longer exists on exchange."""
         # Create open position
         position = Position(
             symbol="BTCUSDT",
@@ -618,23 +618,23 @@ class TestMonitorPositions:
         )
         db_session.add(position)
         db_session.commit()
+        position_id = position.id
 
-        # Mock current price at TP
-        mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 47500.0}}
-        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
-        mock_client.close_short_position.return_value = {"average": 47500.0}
+        # Mock: position no longer exists on exchange (closed by TP)
+        mock_client.get_position_by_symbol.return_value = None
 
-        closed = position_manager.monitor_positions()
+        removed = position_manager.monitor_positions()
 
-        assert len(closed) == 1
-        assert closed[0]["symbol"] == "BTCUSDT"
+        assert len(removed) == 1
+        assert removed[0]["symbol"] == "BTCUSDT"
+        assert removed[0]["reason"] == "closed_on_exchange"
 
-        # Verify position was closed
-        updated = db_session.query(Position).filter_by(id=position.id).first()
-        assert updated.status == "closed"
+        # Verify position was deleted from DB
+        deleted = db_session.query(Position).filter_by(id=position_id).first()
+        assert deleted is None
 
-    def test_monitor_positions_tp_not_reached(self, position_manager, mock_client, db_session):
-        """Test position stays open when TP not reached."""
+    def test_monitor_positions_keeps_open_position(self, position_manager, mock_client, db_session):
+        """Test that position stays when it still exists on exchange."""
         position = Position(
             symbol="BTCUSDT",
             entry_price=50000.0,
@@ -648,20 +648,21 @@ class TestMonitorPositions:
         db_session.add(position)
         db_session.commit()
 
-        # Mock current price above TP
-        mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 49000.0}}
+        # Mock: position still exists on exchange
+        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
 
-        closed = position_manager.monitor_positions()
+        removed = position_manager.monitor_positions()
 
-        assert len(closed) == 0
+        # No positions should be removed
+        assert len(removed) == 0
 
-        # Verify position still open but price updated
-        updated = db_session.query(Position).filter_by(id=position.id).first()
-        assert updated.status == "open"
-        assert updated.current_price == 49000.0
+        # Verify position still exists
+        existing = db_session.query(Position).filter_by(id=position.id).first()
+        assert existing is not None
+        assert existing.status == "open"
 
     def test_monitor_multiple_positions(self, position_manager, mock_client, db_session):
-        """Test monitoring multiple positions."""
+        """Test monitoring multiple positions - only removes those closed on exchange."""
         # Create two positions
         pos1 = Position(
             symbol="BTCUSDT",
@@ -686,48 +687,27 @@ class TestMonitorPositions:
         db_session.add(pos1)
         db_session.add(pos2)
         db_session.commit()
+        pos1_id = pos1.id
+        pos2_id = pos2.id
 
-        # Mock BTC at TP, ETH above TP
-        mock_client.fetch_tickers.return_value = {"BTCUSDT": {"last": 47500.0}, "ETHUSDT": {"last": 2900.0}}
-        mock_client.get_position_by_symbol.return_value = {"positionAmt": "-0.1"}
-        mock_client.close_short_position.return_value = {"average": 47500.0}
+        # Mock: BTC closed on exchange, ETH still open
+        def get_position_side_effect(symbol):
+            if symbol == "BTCUSDT":
+                return None  # BTC closed on exchange
+            return {"positionAmt": "-1.0"}  # ETH still open
 
-        closed = position_manager.monitor_positions()
+        mock_client.get_position_by_symbol.side_effect = get_position_side_effect
 
-        # Only BTC should be closed
-        assert len(closed) == 1
-        assert closed[0]["symbol"] == "BTCUSDT"
+        removed = position_manager.monitor_positions()
 
-    def test_monitor_positions_batch_ticker_fetch(self, position_manager, mock_client, db_session):
-        """Test that tickers are fetched in batch."""
-        # Create multiple positions
-        for i in range(3):
-            db_session.add(
-                Position(
-                    symbol=f"BTC{i}",
-                    entry_price=50000.0,
-                    current_price=50000.0,
-                    quantity=0.1,
-                    margin=100.0,
-                    leverage=20,
-                    take_profit_price=47500.0,
-                    status="open",
-                )
-            )
-        db_session.commit()
+        # Only BTC should be removed
+        assert len(removed) == 1
+        assert removed[0]["symbol"] == "BTCUSDT"
+        assert removed[0]["reason"] == "closed_on_exchange"
 
-        mock_client.fetch_tickers.return_value = {
-            "BTC0": {"last": 49000.0},
-            "BTC1": {"last": 49000.0},
-            "BTC2": {"last": 49000.0},
-        }
-
-        position_manager.monitor_positions()
-
-        # Verify single batch call was made
-        mock_client.fetch_tickers.assert_called_once()
-        call_args = mock_client.fetch_tickers.call_args[0][0]
-        assert len(call_args) == 3
+        # Verify BTC deleted, ETH still exists
+        assert db_session.query(Position).filter_by(id=pos1_id).first() is None
+        assert db_session.query(Position).filter_by(id=pos2_id).first() is not None
 
 
 class TestGetAllOpenPositions:

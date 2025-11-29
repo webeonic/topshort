@@ -225,6 +225,35 @@ class TestPositionRepository:
 
         assert result is None
 
+    def test_delete_position(self, db_session):
+        """Test deleting a position."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+        position_id = position.id
+
+        repo = PositionRepository(db_session)
+        result = repo.delete(position_id)
+
+        assert result is True
+        assert repo.get(position_id) is None
+
+    def test_delete_nonexistent_position(self, db_session):
+        """Test deleting position that doesn't exist."""
+        repo = PositionRepository(db_session)
+        result = repo.delete(99999)
+
+        assert result is False
+
     def test_get_by_symbol(self, db_session):
         """Test getting position by symbol."""
         position = Position(
