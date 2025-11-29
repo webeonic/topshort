@@ -39,45 +39,28 @@ from .scan_queue import ScanQueueFullError, ScanQueueItem, ScanQueueManager
 logger = logging.getLogger(__name__)
 
 # Load authorized users from environment (by user_id)
+# Comma-separated list of Telegram user IDs that can interact with the bot
 AUTHORIZED_USERS = set(user_id.strip() for user_id in os.getenv("TELEGRAM_AUTHORIZED_USERS", "").split(",") if user_id.strip())
-
-# Load authorized usernames from environment (by username, case-insensitive)
-# Default fallback: webeonic (bot owner)
-AUTHORIZED_USERNAMES = set(
-    username.strip().lower()
-    for username in os.getenv("TELEGRAM_AUTHORIZED_USERNAMES", "webeonic").split(",")
-    if username.strip()
-)
 
 
 def is_user_authorized(user) -> bool:
-    """Check if user is authorized by username or user_id.
-
-    Authorization is granted if:
-    - User's username (case-insensitive) is in AUTHORIZED_USERNAMES, OR
-    - User's ID is in AUTHORIZED_USERS
+    """Check if user is authorized by user_id.
 
     Args:
         user: Telegram User object
 
     Returns:
-        True if user is authorized, False otherwise
+        True if user's ID is in AUTHORIZED_USERS, False otherwise
     """
     if not user:
         return False
 
-    username = (user.username or "").lower()
+    if not AUTHORIZED_USERS:
+        logger.warning("SECURITY: No authorized users configured (TELEGRAM_AUTHORIZED_USERS is empty)")
+        return False
+
     user_id = str(user.id)
-
-    # Check username first (primary auth method)
-    if username and username in AUTHORIZED_USERNAMES:
-        return True
-
-    # Fallback to user_id
-    if user_id in AUTHORIZED_USERS:
-        return True
-
-    return False
+    return user_id in AUTHORIZED_USERS
 
 
 class AuditLogger:
