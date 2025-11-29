@@ -140,7 +140,7 @@ def require_auth(func):
     async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         user_id = str(user.id) if user else "unknown"
-        username = user.username or "unknown" if user else "unknown"
+        username = (user.username or "unknown") if user else "unknown"
 
         if not is_user_authorized(user):
             logger.warning(

@@ -120,8 +120,9 @@ class TelegramBot:
         # Register callback query handler for inline keyboards
         app.add_handler(CallbackQueryHandler(self.callback_handler.handle_callback))
 
-        # Register message handler for persistent menu buttons
-        app.add_handler(self.menu_handler.get_message_handler())
+        # Register message handler for persistent menu buttons with authorization filter
+        # This ensures unauthorized users cannot bypass auth by sending menu button texts
+        app.add_handler(self.menu_handler.get_message_handler(auth_filter=auth_filter))
 
         logger.info("Telegram bot handlers registered (commands + callbacks + menu buttons)")
 
