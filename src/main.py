@@ -100,7 +100,11 @@ class TopShortBot:
         # Initialize Binance client
         self.logger.info("Initializing Binance client...")
         self.client = BinanceClient(
-            api_key=self.config.binance.api_key, api_secret=self.config.binance.api_secret, testnet=self.config.binance.testnet
+            api_key=self.config.binance.api_key,
+            api_secret=self.config.binance.api_secret,
+            testnet=self.config.binance.testnet,
+            ohlcv_cache_enabled=self.config.exchange.ohlcv_cache_enabled,
+            ohlcv_cache_max_entries=self.config.exchange.ohlcv_cache_max_entries,
         )
 
         # Load markets
