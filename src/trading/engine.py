@@ -36,7 +36,11 @@ class TradingEngine:
         self._async_loop: asyncio.AbstractEventLoop | None = None
 
         # Initialize components
-        self.market_data = MarketData(client)
+        self.market_data = MarketData(
+            client,
+            prefilter_min_change_pct=config.exchange.prefilter_min_change_pct,
+            prefilter_min_volume_usdt=config.exchange.prefilter_min_volume_usdt,
+        )
         self.top_pairs_service = TopPairsService(client, config.pairs)
         if config.order_block_strategy.enabled:
             self.order_block_strategy = OrderBlockBreakoutStrategy(

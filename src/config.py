@@ -89,6 +89,19 @@ class BinanceConfig:
 
 
 @dataclass
+class ExchangeConfig:
+    """Exchange client configuration for caching and pre-filtering."""
+
+    # OHLCV cache settings
+    ohlcv_cache_enabled: bool = True
+    ohlcv_cache_max_entries: int = 5000
+
+    # Pre-filter settings (reduce API calls during scans)
+    prefilter_min_change_pct: float = 10.0
+    prefilter_min_volume_usdt: float = 100000.0
+
+
+@dataclass
 class TelegramConfig:
     """Telegram bot configuration."""
 
@@ -167,6 +180,7 @@ class Config:
     """Main configuration container."""
 
     binance: BinanceConfig
+    exchange: ExchangeConfig
     telegram: TelegramConfig
     database: DatabaseConfig
     trading: TradingConfig
@@ -187,6 +201,12 @@ def load_config() -> Config:
             api_key=os.getenv("BINANCE_API_KEY", ""),
             api_secret=os.getenv("BINANCE_API_SECRET", ""),
             testnet=os.getenv("BINANCE_TESTNET", "true").lower() == "true",
+        ),
+        exchange=ExchangeConfig(
+            ohlcv_cache_enabled=os.getenv("OHLCV_CACHE_ENABLED", "true").lower() == "true",
+            ohlcv_cache_max_entries=int(os.getenv("OHLCV_CACHE_MAX_ENTRIES", "5000")),
+            prefilter_min_change_pct=float(os.getenv("PREFILTER_MIN_CHANGE_PCT", "10.0")),
+            prefilter_min_volume_usdt=float(os.getenv("PREFILTER_MIN_VOLUME_USDT", "100000.0")),
         ),
         telegram=TelegramConfig(bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""), chat_id=os.getenv("TELEGRAM_CHAT_ID", "")),
         database=DatabaseConfig(path=os.getenv("DATABASE_PATH", "./data/topshort.db")),

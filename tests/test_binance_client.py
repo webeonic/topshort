@@ -97,3 +97,119 @@ class TestExchangeInitialization:
         exchange = binance_client._create_exchange_instance()
 
         assert captured["exchange"] is exchange
+
+
+class TestFetchTickers:
+    """Tests for fetch_tickers method - critical for scan performance."""
+
+    def test_fetch_tickers_batch_success(self, binance_client):
+        """Verify batch fetch returns dict mapping symbol to ticker."""
+        # Setup mock to return all tickers
+        mock_all_tickers = {
+            "BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "last": 50000.0, "percentage": 5.0},
+            "ETH/USDT:USDT": {"symbol": "ETH/USDT:USDT", "last": 3000.0, "percentage": 3.0},
+            "SOL/USDT:USDT": {"symbol": "SOL/USDT:USDT", "last": 100.0, "percentage": 10.0},
+        }
+        binance_client.exchange.fetch_tickers = Mock(return_value=mock_all_tickers)
+
+        result = binance_client.fetch_tickers(["BTC/USDT:USDT", "ETH/USDT:USDT"])
+
+        # Should return only requested symbols
+        assert len(result) == 2
+        assert "BTC/USDT:USDT" in result
+        assert "ETH/USDT:USDT" in result
+        assert "SOL/USDT:USDT" not in result
+        # Verify single batch call was made
+        assert binance_client.exchange.fetch_tickers.call_count == 1
+
+    def test_fetch_tickers_no_fallback_on_error(self, binance_client):
+        """Verify NO fallback to individual requests on error - this is critical for performance."""
+        # Setup mock to raise exception
+        binance_client.exchange.fetch_tickers = Mock(side_effect=Exception("API Error"))
+        binance_client.exchange.fetch_ticker = Mock(return_value={"last": 50000.0})
+
+        result = binance_client.fetch_tickers(["BTC/USDT:USDT", "ETH/USDT:USDT"])
+
+        # Should return empty dict, NOT fall back to individual requests
+        assert result == {}
+        # Verify NO individual ticker calls were made
+        assert binance_client.exchange.fetch_ticker.call_count == 0
+
+    def test_fetch_tickers_filters_to_requested_symbols(self, binance_client):
+        """Verify only requested symbols are returned from batch fetch."""
+        # Mock returns more symbols than requested
+        mock_all_tickers = {
+            "BTC/USDT:USDT": {"last": 50000.0},
+            "ETH/USDT:USDT": {"last": 3000.0},
+            "XRP/USDT:USDT": {"last": 0.5},
+            "DOGE/USDT:USDT": {"last": 0.1},
+        }
+        binance_client.exchange.fetch_tickers = Mock(return_value=mock_all_tickers)
+
+        # Request only 2 symbols
+        result = binance_client.fetch_tickers(["BTC/USDT:USDT", "XRP/USDT:USDT"])
+
+        assert len(result) == 2
+        assert "BTC/USDT:USDT" in result
+        assert "XRP/USDT:USDT" in result
+        assert "ETH/USDT:USDT" not in result
+        assert "DOGE/USDT:USDT" not in result
+
+    def test_fetch_tickers_handles_missing_symbols(self, binance_client):
+        """Verify graceful handling when requested symbols not in exchange response."""
+        mock_all_tickers = {
+            "BTC/USDT:USDT": {"last": 50000.0},
+        }
+        binance_client.exchange.fetch_tickers = Mock(return_value=mock_all_tickers)
+
+        # Request symbols that don't exist in response
+        result = binance_client.fetch_tickers(["BTC/USDT:USDT", "NONEXISTENT/USDT:USDT"])
+
+        assert len(result) == 1
+        assert "BTC/USDT:USDT" in result
+        assert "NONEXISTENT/USDT:USDT" not in result
+
+    def test_fetch_tickers_empty_symbols_list(self, binance_client):
+        """Verify empty list request returns empty result without API call."""
+        mock_all_tickers = {"BTC/USDT:USDT": {"last": 50000.0}}
+        binance_client.exchange.fetch_tickers = Mock(return_value=mock_all_tickers)
+
+        result = binance_client.fetch_tickers([])
+
+        assert result == {}
+        # API should still be called (we fetch all tickers)
+        assert binance_client.exchange.fetch_tickers.call_count == 1
+
+
+class TestGetOHLCV:
+    """Tests for get_ohlcv method."""
+
+    def test_get_ohlcv_success(self, binance_client):
+        """Verify OHLCV data is returned correctly."""
+        mock_ohlcv = [
+            [1700000000000, 50000.0, 51000.0, 49000.0, 50500.0, 1000.0],
+            [1700003600000, 50500.0, 52000.0, 50000.0, 51500.0, 1200.0],
+        ]
+        binance_client.exchange.fetch_ohlcv = Mock(return_value=mock_ohlcv)
+
+        result = binance_client.get_ohlcv("BTC/USDT:USDT", "1h", 2)
+
+        assert result == mock_ohlcv
+        assert len(result) == 2
+        binance_client.exchange.fetch_ohlcv.assert_called_once_with("BTC/USDT:USDT", "1h", limit=2)
+
+    def test_get_ohlcv_returns_empty_on_error(self, binance_client):
+        """Verify empty list returned on error instead of exception."""
+        binance_client.exchange.fetch_ohlcv = Mock(side_effect=Exception("Network error"))
+
+        result = binance_client.get_ohlcv("BTC/USDT:USDT", "1h", 100)
+
+        assert result == []
+
+    def test_get_ohlcv_respects_timeframe(self, binance_client):
+        """Verify timeframe parameter is passed correctly."""
+        binance_client.exchange.fetch_ohlcv = Mock(return_value=[])
+
+        binance_client.get_ohlcv("BTC/USDT:USDT", "4h", 50)
+
+        binance_client.exchange.fetch_ohlcv.assert_called_once_with("BTC/USDT:USDT", "4h", limit=50)
