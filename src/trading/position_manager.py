@@ -569,8 +569,12 @@ class PositionManager:
 
         for position in open_positions:
             try:
-                # Look up exchange position by symbol
-                exchange_position = exchange_positions_map.get(position.symbol)
+                # Convert CCXT symbol (e.g., "BTC/USDT:USDT") to exchange native format (e.g., "BTCUSDT")
+                market = self.client.exchange.market(position.symbol)
+                exchange_symbol = market["id"]
+
+                # Look up exchange position by native symbol
+                exchange_position = exchange_positions_map.get(exchange_symbol)
                 position_amt = float(exchange_position.get("positionAmt", 0)) if exchange_position else 0
 
                 # Determine if our tracked position still exists on exchange

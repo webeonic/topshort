@@ -45,6 +45,10 @@ def mock_client():
     client.get_position_by_symbol = Mock()
     client.get_positions = Mock(return_value=[])  # Batch fetch for monitor_positions
     client.fetch_order = Mock()
+    # Mock exchange.market() for symbol conversion (CCXT unified -> exchange native)
+    # In tests, symbols are already in native format (e.g., "BTCUSDT"), so return same symbol
+    client.exchange = Mock()
+    client.exchange.market = Mock(side_effect=lambda symbol: {"id": symbol})
     return client
 
 
