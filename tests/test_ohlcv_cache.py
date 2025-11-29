@@ -177,6 +177,59 @@ class TestOHLCVCacheExpiryCalculation:
         assert expiry > time.time()
         assert expiry < time.time() + 3700  # Within ~1 hour
 
+    def test_calculate_expiry_handles_midnight_rollover(self):
+        """Expiry calculation should handle day rollover correctly.
+
+        Bug fix: At 23:30 with 2h timeframe, next period is midnight (00:00).
+        Previously, modulo arithmetic caused negative seconds_until_expiry.
+        """
+        cache = OHLCVCache()
+
+        with patch("src.exchange.ohlcv_cache.datetime") as mock_dt:
+            from datetime import datetime, timezone
+
+            # Set time to 23:30:00 UTC - next 2h boundary is midnight
+            mock_now = datetime(2024, 1, 15, 23, 30, 0, tzinfo=timezone.utc)
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+
+            with patch("src.exchange.ohlcv_cache.time") as mock_time:
+                mock_time.time.return_value = 1705361400.0  # epoch for 23:30 UTC
+
+                expiry = cache._calculate_expiry("2h")
+
+                # Should expire at midnight (00:00) + 5s buffer = 30min + 5s
+                expected_seconds = 30 * 60 + 5
+                actual_diff = expiry - mock_time.time.return_value
+
+                # Verify expiry is in the future (not negative/past)
+                assert actual_diff > 0, f"Expiry should be in future, got {actual_diff}s"
+                assert abs(actual_diff - expected_seconds) < 1
+
+    def test_calculate_expiry_4h_near_midnight(self):
+        """4h timeframe at 23:00 should expire at midnight."""
+        cache = OHLCVCache()
+
+        with patch("src.exchange.ohlcv_cache.datetime") as mock_dt:
+            from datetime import datetime, timezone
+
+            # Set time to 23:00:00 UTC - in 20:00-00:00 period
+            mock_now = datetime(2024, 1, 15, 23, 0, 0, tzinfo=timezone.utc)
+            mock_dt.now.return_value = mock_now
+            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+
+            with patch("src.exchange.ohlcv_cache.time") as mock_time:
+                mock_time.time.return_value = 1705359600.0  # epoch for 23:00 UTC
+
+                expiry = cache._calculate_expiry("4h")
+
+                # Should expire at midnight (00:00) + 5s buffer = 1h + 5s
+                expected_seconds = 60 * 60 + 5
+                actual_diff = expiry - mock_time.time.return_value
+
+                assert actual_diff > 0, f"Expiry should be in future, got {actual_diff}s"
+                assert abs(actual_diff - expected_seconds) < 1
+
 
 class TestOHLCVCacheLRU:
     """Tests for LRU eviction behavior."""

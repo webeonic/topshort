@@ -144,13 +144,13 @@ class OHLCVCache:
         current_period = total_seconds // period_seconds
         next_period_seconds = (current_period + 1) * period_seconds
 
-        # Handle day rollover for daily timeframe
+        # Handle day rollover - if next period crosses midnight,
+        # calculate time until midnight plus any offset into the next day
         if next_period_seconds >= 86400:
-            next_period_seconds = next_period_seconds % 86400
-
-        seconds_until_expiry = next_period_seconds - total_seconds
-        if seconds_until_expiry <= 0:
-            seconds_until_expiry += period_seconds
+            # Seconds until midnight + offset into next day (usually 0)
+            seconds_until_expiry = (86400 - total_seconds) + (next_period_seconds - 86400)
+        else:
+            seconds_until_expiry = next_period_seconds - total_seconds
 
         # Add small buffer (5 seconds) to ensure we don't serve stale data
         return time.time() + seconds_until_expiry + 5
