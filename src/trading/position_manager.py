@@ -579,10 +579,11 @@ class PositionManager:
                     }
 
                     # Delete position from database
-                    self.position_repo.delete(position.id)
-
-                    logger.info(f"Position removed: {position.symbol}")
-                    removed_positions.append(position_info)
+                    if self.position_repo.delete(position.id):
+                        logger.info(f"Position removed: {position.symbol}")
+                        removed_positions.append(position_info)
+                    else:
+                        logger.warning(f"Failed to delete position {position.symbol} (id={position.id}) from database")
 
             except Exception as e:
                 logger.error(f"Error monitoring position {position.id} ({position.symbol}): {e}")

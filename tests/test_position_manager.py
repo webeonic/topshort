@@ -709,6 +709,32 @@ class TestMonitorPositions:
         assert db_session.query(Position).filter_by(id=pos1_id).first() is None
         assert db_session.query(Position).filter_by(id=pos2_id).first() is not None
 
+    def test_monitor_positions_delete_fails(self, position_manager, mock_client, db_session):
+        """Test that position is not reported as removed if delete fails."""
+        position = Position(
+            symbol="BTCUSDT",
+            entry_price=50000.0,
+            current_price=50000.0,
+            quantity=0.1,
+            margin=100.0,
+            leverage=20,
+            take_profit_price=47500.0,
+            status="open",
+        )
+        db_session.add(position)
+        db_session.commit()
+
+        # Mock: position no longer exists on exchange
+        mock_client.get_position_by_symbol.return_value = None
+
+        # Mock: delete returns False (e.g., race condition - already deleted)
+        position_manager.position_repo.delete = lambda x: False
+
+        removed = position_manager.monitor_positions()
+
+        # Should NOT report position as removed since delete failed
+        assert len(removed) == 0
+
 
 class TestGetAllOpenPositions:
     """Test getting all open positions."""
