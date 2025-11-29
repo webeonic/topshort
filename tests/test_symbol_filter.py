@@ -82,8 +82,13 @@ class TestSymbolPreFilterBasics:
         assert "BTC/USDT:USDT" in result
         assert "NONEXISTENT/USDT:USDT" not in result
 
-    def test_filter_respects_excluded_symbols(self):
-        """Excluded symbols should be skipped regardless of metrics."""
+    def test_filter_processes_all_symbols_when_no_exclusions(self):
+        """All qualifying symbols should pass when no exclusions are applied.
+
+        Note: Symbol exclusions are now handled in MarketData.scan_market()
+        before filter_for_pump_scan() is called, keeping the prefilter focused
+        on performance optimization only.
+        """
         pre_filter = SymbolPreFilter(min_24h_change_pct=0, min_volume_usdt=0)
         tickers = {
             "BTC/USDT:USDT": {"percentage": 50.0, "quoteVolume": 10000000},
@@ -94,11 +99,10 @@ class TestSymbolPreFilterBasics:
             symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"],
             tickers=tickers,
             pump_threshold_pct=30.0,
-            excluded_symbols={"BTC/USDT:USDT"},
         )
 
-        # BTC should be excluded even though it passes all thresholds
-        assert "BTC/USDT:USDT" not in result
+        # Both should pass since they meet all thresholds
+        assert "BTC/USDT:USDT" in result
         assert "ETH/USDT:USDT" in result
 
 

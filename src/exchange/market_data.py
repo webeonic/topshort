@@ -288,19 +288,23 @@ class MarketData:
         ticker_duration = time.time() - ticker_start
         logger.info(f"Fetched {len(tickers_map)} tickers in batch (took {ticker_duration:.2f}s)")
 
+        # Apply symbol exclusions (e.g., symbols with existing positions)
+        # This is independent of prefiltering - exclusions are semantic, not performance optimization
+        if excluded_symbols:
+            symbols = [s for s in symbols if s not in excluded_symbols]
+            logger.debug(f"Excluded {initial_symbol_count - len(symbols)} symbols with existing positions")
+
         # Apply pre-filtering to reduce OHLCV API calls (the main bottleneck)
         if use_prefilter:
+            pre_filter_count = len(symbols)
             filter_start = time.time()
             symbols = self.pre_filter.filter_for_pump_scan(
                 symbols=symbols,
                 tickers=tickers_map,
                 pump_threshold_pct=pump_threshold,
-                excluded_symbols=excluded_symbols,
             )
             filter_duration = time.time() - filter_start
-            logger.info(
-                f"Pre-filter reduced symbols: {initial_symbol_count} -> {len(symbols)} " f"(took {filter_duration:.3f}s)"
-            )
+            logger.info(f"Pre-filter reduced symbols: {pre_filter_count} -> {len(symbols)} " f"(took {filter_duration:.3f}s)")
 
         total_symbols = len(symbols)
 

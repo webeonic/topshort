@@ -240,6 +240,58 @@ class TestParallelScanner:
         # SYM0 and SYM2 should work, SYM1 will fail
         assert len(results) == 2
 
+    def test_excluded_symbols_respected_without_prefilter(self, mock_binance_client_with_symbols, scanner_config):
+        """Test that excluded_symbols works even when use_prefilter=False."""
+        market_data = MarketData(mock_binance_client_with_symbols)
+
+        # Exclude SYM0USDT which would otherwise match criteria
+        results = market_data.scan_market(
+            pump_threshold=scanner_config.pump_threshold_pct,
+            pump_hours_min=scanner_config.pump_period_hours_min,
+            pump_hours_max=scanner_config.pump_period_hours_max,
+            cooldown_hours_min=scanner_config.cooldown_period_hours_min,
+            cooldown_hours_max=scanner_config.cooldown_period_hours_max,
+            volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
+            top_n=5,
+            use_prefilter=False,  # Disable pre-filter
+            excluded_symbols={"SYM0USDT"},  # Exclude one matching symbol
+        )
+
+        # Should find only 2 signals (SYM1 and SYM2), not 3
+        # because SYM0USDT is excluded
+        assert len(results) == 2
+        result_symbols = {r["symbol"] for r in results}
+        assert "SYM0USDT" not in result_symbols
+        assert "SYM1USDT" in result_symbols
+        assert "SYM2USDT" in result_symbols
+
+    def test_excluded_symbols_respected_with_prefilter(self, mock_binance_client_with_symbols, scanner_config):
+        """Test that excluded_symbols works when use_prefilter=True."""
+        market_data = MarketData(mock_binance_client_with_symbols)
+
+        # Add required ticker data for prefilter
+        mock_binance_client_with_symbols.fetch_tickers.return_value = {
+            f"SYM{i}USDT": {"percentage": 50.0, "quoteVolume": 10000000} for i in range(10)
+        }
+
+        # Exclude SYM1USDT and SYM2USDT
+        results = market_data.scan_market(
+            pump_threshold=scanner_config.pump_threshold_pct,
+            pump_hours_min=scanner_config.pump_period_hours_min,
+            pump_hours_max=scanner_config.pump_period_hours_max,
+            cooldown_hours_min=scanner_config.cooldown_period_hours_min,
+            cooldown_hours_max=scanner_config.cooldown_period_hours_max,
+            volume_decrease_threshold=scanner_config.volume_decrease_threshold_pct,
+            top_n=5,
+            use_prefilter=True,
+            excluded_symbols={"SYM1USDT", "SYM2USDT"},
+        )
+
+        # Should find only 1 signal (SYM0)
+        # SYM1 and SYM2 are excluded
+        assert len(results) == 1
+        assert results[0]["symbol"] == "SYM0USDT"
+
     @pytest.mark.slow
     def test_parallel_scan_performance(self, mock_binance_client_with_symbols, scanner_config):
         """Test that parallel scan completes in reasonable time."""
