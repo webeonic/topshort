@@ -15,6 +15,7 @@ from ..database.repository import CallbackLogRepository, KeyboardStateRepository
 from ..trading.engine import TradingEngine
 from ..utils.async_executor import run_blocking
 from . import commands as bot_commands_module
+from .commands import is_user_authorized
 from .keyboard_builder import InlineTemplates, KeyboardBuilder, callback_registry
 from .scan_queue import ScanQueueManager
 
@@ -162,9 +163,23 @@ class CallbackHandler:
         before routing, ensuring pattern matching and data extraction work
         correctly even when callback_data was truncated due to Telegram's
         64-byte limit.
+
+        Authorization check is performed first - unauthorized users are blocked.
         """
         query = update.callback_query
-        await query.answer()
+
+        # Authorization check - block unauthorized users
+        user = query.from_user
+        if not is_user_authorized(user):
+            user_id = str(user.id) if user else "unknown"
+            username = (user.username or "unknown") if user else "unknown"
+            logger.warning(
+                f"SECURITY: Unauthorized callback attempt - "
+                f"User ID: {user_id}, Username: @{username}, "
+                f"Callback: {query.data}"
+            )
+            await query.answer("❌ Access denied", show_alert=True)
+            return
 
         raw_callback_data = query.data
         # Resolve hashed callback_data to original value if registered
@@ -195,47 +210,56 @@ class CallbackHandler:
 
         # No handler found
         logger.warning(f"No handler found for callback: {callback_data}")
+        await query.answer("⚠️ Unknown action")
         await query.edit_message_text(f"⚠️ Unknown action: {callback_data}")
 
     @log_callback(success=True)
     async def handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle status callback."""
+        await update.callback_query.answer()
         await self._get_commands().status(update, context)
 
     @log_callback(success=True)
     async def handle_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle positions callback."""
+        await update.callback_query.answer()
         await self._get_commands().positions(update, context)
 
     @log_callback(success=True)
     async def handle_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle history callback."""
+        await update.callback_query.answer()
         await self._get_commands().history(update, context)
 
     @log_callback(success=True)
     async def handle_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle stats callback."""
+        await update.callback_query.answer()
         await self._get_commands().stats(update, context)
 
     @log_callback(success=True)
     async def handle_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle settings callback."""
+        await update.callback_query.answer()
         await self._get_commands().settings(update, context)
 
     @log_callback(success=True)
     async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle help callback."""
+        await update.callback_query.answer()
         await self._get_commands().start(update, context)
 
     @log_callback(success=True)
     async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle return to main menu."""
+        await update.callback_query.answer()
         await self._get_commands().show_menu(update, context)
 
     @log_callback(success=True)
     async def handle_scan_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show strategy selection for manual scan."""
         query = update.callback_query
+        await query.answer()
 
         strategies = [
             ("🚀 Pump & Cooldown", "pump_cooldown"),
@@ -270,6 +294,8 @@ class CallbackHandler:
             await query.answer("⚠️ Неизвестная стратегия", show_alert=True)
             return
 
+        await query.answer(f"🔍 Запуск {label_map[strategy_mode]}...")
+
         await query.edit_message_text(
             f"⏳ Запускаю *{label_map[strategy_mode]}* сканирование...",
             parse_mode="Markdown",
@@ -282,6 +308,7 @@ class CallbackHandler:
     async def handle_position_select(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position selection from list - show action buttons."""
         query = update.callback_query
+        await query.answer()
         # Use resolved callback_data from context (handles hashed callbacks)
         callback_data = context.user_data.get("_resolved_callback", query.data)
         symbol = callback_data.replace("pos_select_", "")
@@ -322,6 +349,7 @@ class CallbackHandler:
     async def handle_position_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle position details callback."""
         query = update.callback_query
+        await query.answer()
         # Use resolved callback_data from context (handles hashed callbacks)
         callback_data = context.user_data.get("_resolved_callback", query.data)
         symbol = callback_data.replace("pos_details_", "")
@@ -404,6 +432,7 @@ class CallbackHandler:
     async def handle_trading_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle trading resume callback."""
         query = update.callback_query
+        await query.answer("▶️ Resuming trading...")
         from ..database.repository import BotStatusRepository
 
         bot_status_repo = BotStatusRepository(self.session)
@@ -415,6 +444,7 @@ class CallbackHandler:
     async def handle_trading_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle trading pause callback."""
         query = update.callback_query
+        await query.answer("⏸️ Pausing trading...")
         from ..database.repository import BotStatusRepository
 
         bot_status_repo = BotStatusRepository(self.session)
@@ -449,6 +479,7 @@ class CallbackHandler:
     async def handle_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle confirmation callback."""
         query = update.callback_query
+        await query.answer("✅ Confirming...")
         # Use resolved callback_data from context (handles hashed callbacks)
         callback_data = context.user_data.get("_resolved_callback", query.data)
         # Extract action: confirm_closeall_data
@@ -461,12 +492,14 @@ class CallbackHandler:
     async def handle_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle cancel callback."""
         query = update.callback_query
+        await query.answer()
         await query.edit_message_text("❌ *Cancelled*", parse_mode="Markdown")
 
     @log_callback(success=True)
     async def handle_setting_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle setting menu callback."""
         query = update.callback_query
+        await query.answer()
         # Use resolved callback_data from context (handles hashed callbacks)
         callback_data = context.user_data.get("_resolved_callback", query.data)
         setting_key = callback_data.replace("setting_", "")

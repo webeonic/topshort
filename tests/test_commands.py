@@ -210,10 +210,10 @@ class TestStatusCommand:
 
         await bot_commands.status(mock_update, mock_context)
 
-        # Should send error message
+        # Should send generic error message (not exposing internal details)
         mock_update.effective_message.reply_text.assert_called_once()
         message = mock_update.effective_message.reply_text.call_args[0][0]
-        assert "Error" in message
+        assert "error occurred" in message
 
 
 class TestPositionsCommand:
@@ -692,6 +692,76 @@ class TestRequireAuthDecorator:
 
         result = await test_command(bot_commands, mock_update, mock_context)
         assert result is None
+
+
+class TestIsUserAuthorized:
+    """Test is_user_authorized function."""
+
+    @patch("src.bot.commands.AUTHORIZED_USERNAMES", {"testuser", "admin"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", set())
+    def test_authorized_by_username(self):
+        """Test user authorized by username."""
+        from src.bot.commands import is_user_authorized
+
+        mock_user = MagicMock()
+        mock_user.username = "testuser"
+        mock_user.id = 99999
+
+        assert is_user_authorized(mock_user) is True
+
+    @patch("src.bot.commands.AUTHORIZED_USERNAMES", {"testuser"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", set())
+    def test_authorized_by_username_case_insensitive(self):
+        """Test username authorization is case-insensitive."""
+        from src.bot.commands import is_user_authorized
+
+        mock_user = MagicMock()
+        mock_user.username = "TestUser"  # Mixed case
+        mock_user.id = 99999
+
+        assert is_user_authorized(mock_user) is True
+
+    @patch("src.bot.commands.AUTHORIZED_USERNAMES", set())
+    @patch("src.bot.commands.AUTHORIZED_USERS", {"12345"})
+    def test_authorized_by_user_id(self):
+        """Test user authorized by user_id fallback."""
+        from src.bot.commands import is_user_authorized
+
+        mock_user = MagicMock()
+        mock_user.username = "unknown_user"
+        mock_user.id = 12345
+
+        assert is_user_authorized(mock_user) is True
+
+    @patch("src.bot.commands.AUTHORIZED_USERNAMES", {"admin"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", set())
+    def test_unauthorized_user(self):
+        """Test unauthorized user is rejected."""
+        from src.bot.commands import is_user_authorized
+
+        mock_user = MagicMock()
+        mock_user.username = "hacker"
+        mock_user.id = 99999
+
+        assert is_user_authorized(mock_user) is False
+
+    @patch("src.bot.commands.AUTHORIZED_USERNAMES", {"admin"})
+    @patch("src.bot.commands.AUTHORIZED_USERS", set())
+    def test_user_without_username(self):
+        """Test user without username (None)."""
+        from src.bot.commands import is_user_authorized
+
+        mock_user = MagicMock()
+        mock_user.username = None
+        mock_user.id = 99999
+
+        assert is_user_authorized(mock_user) is False
+
+    def test_none_user(self):
+        """Test None user is rejected."""
+        from src.bot.commands import is_user_authorized
+
+        assert is_user_authorized(None) is False
 
 
 class TestAuditLogger:

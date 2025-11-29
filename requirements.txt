@@ -38,4 +38,4 @@ bandit==1.9.1
 # Reliability and Security
 tenacity==8.2.3
 pybreaker==1.0.2
-cryptography==42.0.5
+cryptography>=44.0.1

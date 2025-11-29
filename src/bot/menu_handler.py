@@ -6,7 +6,7 @@ on the persistent ReplyKeyboardMarkup menu.
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
@@ -70,8 +70,14 @@ class MenuButtonHandler:
         else:
             logger.warning(f"Unknown menu button: {text}")
 
-    def get_message_handler(self) -> MessageHandler:
+    def get_message_handler(self, auth_filter: Optional[filters.BaseFilter] = None) -> MessageHandler:
         """Create MessageHandler for menu buttons.
+
+        Args:
+            auth_filter: Optional authorization filter. If provided,
+                         only messages passing this filter will be handled.
+                         This should be the AUTHORIZED_USER_FILTER to ensure
+                         only authorized users can use menu buttons.
 
         Returns:
             MessageHandler configured for menu button texts
@@ -90,4 +96,10 @@ class MenuButtonHandler:
         # Build filter for exact text matches
         text_filter = filters.TEXT & filters.Regex(f"^({'|'.join(map(re.escape, menu_texts))})$")
 
-        return MessageHandler(text_filter, self.handle_menu_button)
+        # Combine with authorization filter if provided
+        if auth_filter:
+            combined_filter = text_filter & auth_filter
+        else:
+            combined_filter = text_filter
+
+        return MessageHandler(combined_filter, self.handle_menu_button)

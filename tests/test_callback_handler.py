@@ -177,8 +177,13 @@ class TestCallbackHandlerRouting:
     """Test callback routing."""
 
     @pytest.mark.asyncio
-    async def test_handle_callback_exact_match(self, callback_handler, mock_update, mock_context):
-        """Test routing to exact match handler."""
+    @patch("src.bot.callback_handler.is_user_authorized", return_value=True)
+    async def test_handle_callback_exact_match(self, mock_auth, callback_handler, mock_update, mock_context):
+        """Test routing to exact match handler.
+
+        Note: query.answer() is now called by individual handlers, not in handle_callback.
+        This test only verifies that routing works correctly.
+        """
         mock_handler = AsyncMock()
         callback_handler.register("exact_callback", mock_handler)
         mock_update.callback_query.data = "exact_callback"
@@ -186,10 +191,10 @@ class TestCallbackHandlerRouting:
         await callback_handler.handle_callback(mock_update, mock_context)
 
         mock_handler.assert_called_once_with(mock_update, mock_context)
-        mock_update.callback_query.answer.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handle_callback_pattern_match(self, callback_handler, mock_update, mock_context):
+    @patch("src.bot.callback_handler.is_user_authorized", return_value=True)
+    async def test_handle_callback_pattern_match(self, mock_auth, callback_handler, mock_update, mock_context):
         """Test routing to pattern match handler."""
         mock_handler = AsyncMock()
         callback_handler.register_pattern("pattern_", mock_handler)
@@ -200,7 +205,8 @@ class TestCallbackHandlerRouting:
         mock_handler.assert_called_once_with(mock_update, mock_context)
 
     @pytest.mark.asyncio
-    async def test_handle_callback_no_match(self, callback_handler, mock_update, mock_context):
+    @patch("src.bot.callback_handler.is_user_authorized", return_value=True)
+    async def test_handle_callback_no_match(self, mock_auth, callback_handler, mock_update, mock_context):
         """Test handling callback with no matching handler."""
         mock_update.callback_query.data = "unknown_callback"
 
@@ -209,6 +215,28 @@ class TestCallbackHandlerRouting:
         mock_update.callback_query.edit_message_text.assert_called_once()
         call_args = mock_update.callback_query.edit_message_text.call_args[0][0]
         assert "Unknown action" in call_args
+
+    @pytest.mark.asyncio
+    async def test_handle_callback_unauthorized_user_blocked(self, callback_handler, mock_update, mock_context):
+        """Test that unauthorized user is blocked from callback handling.
+
+        This tests the security feature that blocks unauthorized users
+        from interacting with inline keyboard buttons.
+        """
+        with patch("src.bot.callback_handler.is_user_authorized", return_value=False):
+            mock_handler = AsyncMock()
+            callback_handler.register("blocked_callback", mock_handler)
+            mock_update.callback_query.data = "blocked_callback"
+
+            await callback_handler.handle_callback(mock_update, mock_context)
+
+            # Handler should NOT be called
+            mock_handler.assert_not_called()
+            # User should get "Access denied" alert
+            mock_update.callback_query.answer.assert_called_once()
+            call_args = mock_update.callback_query.answer.call_args
+            assert "Access denied" in call_args[1].get("text", call_args[0][0] if call_args[0] else "")
+            assert call_args[1].get("show_alert") is True
 
 
 class TestCommandCallbacks:

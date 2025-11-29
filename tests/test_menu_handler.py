@@ -157,6 +157,124 @@ class TestGetMessageHandler:
         assert handler.callback.__name__ == "handle_menu_button"
         assert handler.callback.__self__ is menu_handler
 
+    def test_without_auth_filter_accepts_any_user(self, menu_handler):
+        """Test handler without auth_filter accepts any user message."""
+        handler = menu_handler.get_message_handler(auth_filter=None)
+
+        # Create mock message with menu button text
+        mock_message = MagicMock(spec=Message)
+        mock_message.text = MENU_BTN_STATUS
+        mock_message.from_user = MagicMock(spec=User)
+        mock_message.from_user.username = "any_user"
+        mock_message.from_user.id = 12345
+
+        # Filter should check for text match (not auth)
+        assert isinstance(handler, MessageHandler)
+
+    def test_with_auth_filter_combines_filters(self, menu_handler):
+        """Test handler with auth_filter combines text and auth filters."""
+        from telegram.ext import filters
+
+        # Create a simple mock auth filter
+        mock_auth_filter = MagicMock(spec=filters.BaseFilter)
+
+        handler = menu_handler.get_message_handler(auth_filter=mock_auth_filter)
+
+        assert isinstance(handler, MessageHandler)
+        # The handler should have a combined filter
+        assert handler.filters is not None
+
+
+class TestMenuHandlerAuthorizationIntegration:
+    """Test menu handler authorization filter integration.
+
+    These tests verify that the auth_filter parameter properly integrates
+    with the message handler to block unauthorized users.
+    """
+
+    def test_auth_filter_is_applied(self, menu_handler):
+        """Test that auth_filter is properly applied to the handler."""
+        from telegram.ext import filters
+
+        class MockAuthFilter(filters.MessageFilter):
+            """Mock filter that always returns False (unauthorized)."""
+
+            def filter(self, message):
+                return False
+
+        mock_auth = MockAuthFilter()
+        handler = menu_handler.get_message_handler(auth_filter=mock_auth)
+
+        # Create mock message
+        mock_message = MagicMock(spec=Message)
+        mock_message.text = MENU_BTN_STATUS
+        mock_message.from_user = MagicMock(spec=User)
+        mock_message.from_user.username = "unauthorized_user"
+        mock_message.from_user.id = 99999
+
+        # The combined filter should return False because auth filter returns False
+        assert handler.filters.check_update(MagicMock(message=mock_message, effective_message=mock_message)) is False
+
+    def test_authorized_user_passes_filter(self, menu_handler):
+        """Test that authorized user passes the combined filter."""
+        from telegram.ext import filters
+
+        class MockAuthFilter(filters.MessageFilter):
+            """Mock filter that always returns True (authorized)."""
+
+            def filter(self, message):
+                return True
+
+        mock_auth = MockAuthFilter()
+        handler = menu_handler.get_message_handler(auth_filter=mock_auth)
+
+        # Create mock message with valid menu button text
+        mock_message = MagicMock(spec=Message)
+        mock_message.text = MENU_BTN_STATUS
+        mock_message.from_user = MagicMock(spec=User)
+        mock_message.from_user.username = "authorized_user"
+        mock_message.from_user.id = 12345
+
+        mock_update = MagicMock()
+        mock_update.message = mock_message
+        mock_update.effective_message = mock_message
+
+        # The combined filter should return truthy value (dict with matches or True)
+        result = handler.filters.check_update(mock_update)
+        assert result  # Truthy value means filter passed
+
+    def test_unauthorized_user_blocked_with_valid_text(self, menu_handler):
+        """Test unauthorized user is blocked even with valid menu button text.
+
+        This is the key security test - verifying that sending menu button
+        text like '📊 Статус' does not bypass authorization.
+        """
+        from telegram.ext import filters
+
+        class MockAuthFilter(filters.MessageFilter):
+            """Mock filter simulating unauthorized user."""
+
+            def filter(self, message):
+                # Simulate checking if user is in authorized list
+                return message.from_user.username == "authorized_only"
+
+        mock_auth = MockAuthFilter()
+        handler = menu_handler.get_message_handler(auth_filter=mock_auth)
+
+        # Create mock message from unauthorized user with valid menu text
+        mock_message = MagicMock(spec=Message)
+        mock_message.text = MENU_BTN_STATUS  # Valid menu button text
+        mock_message.from_user = MagicMock(spec=User)
+        mock_message.from_user.username = "hacker"  # Not authorized
+        mock_message.from_user.id = 99999
+
+        mock_update = MagicMock()
+        mock_update.message = mock_message
+        mock_update.effective_message = mock_message
+
+        # Should be blocked despite valid menu button text
+        assert handler.filters.check_update(mock_update) is False
+
 
 class TestMenuButtonRouting:
     """Test all menu buttons are properly routed."""

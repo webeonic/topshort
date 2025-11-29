@@ -244,9 +244,12 @@ class PositionRepository:
         return self.session.query(Position).filter_by(status="open").count()
 
     def get_total_margin(self) -> float:
-        """Get total margin used in open positions."""
-        result = self.session.query(Position).filter_by(status="open").all()
-        return sum(p.margin for p in result)
+        """Get total margin used in open positions.
+
+        Uses SQL SUM aggregation for efficiency instead of loading all positions.
+        """
+        result = self.session.query(func.sum(Position.margin)).filter(Position.status == "open").scalar()
+        return result or 0.0
 
     def get_by_source(self, source: str, status: str = "open") -> List[Position]:
         """Get positions by source."""
@@ -349,9 +352,24 @@ class TradeHistoryRepository:
         )
 
     def get_statistics(self) -> dict:
-        """Get trading statistics."""
-        all_trades = self.session.query(TradeHistory).all()
-        if not all_trades:
+        """Get trading statistics.
+
+        Uses SQL aggregation for efficiency instead of loading all trades.
+        """
+        from sqlalchemy import case
+
+        # Single query with all aggregations
+        stats = self.session.query(
+            func.count(TradeHistory.id).label("total_trades"),
+            func.sum(case((TradeHistory.pnl > 0, 1), else_=0)).label("winning_trades"),
+            func.sum(case((TradeHistory.pnl < 0, 1), else_=0)).label("losing_trades"),
+            func.sum(TradeHistory.pnl).label("total_pnl"),
+            func.avg(TradeHistory.pnl).label("avg_pnl"),
+            func.avg(TradeHistory.pnl_pct).label("avg_pnl_pct"),
+        ).first()
+
+        total_trades = stats.total_trades or 0
+        if total_trades == 0:
             return {
                 "total_trades": 0,
                 "winning_trades": 0,
@@ -362,18 +380,19 @@ class TradeHistoryRepository:
                 "avg_pnl_pct": 0.0,
             }
 
-        winning_trades = [t for t in all_trades if t.pnl > 0]
-        losing_trades = [t for t in all_trades if t.pnl < 0]
-        total_pnl = sum(t.pnl for t in all_trades)
+        winning_trades = stats.winning_trades or 0
+        total_pnl = stats.total_pnl or 0.0
+        avg_pnl = stats.avg_pnl or 0.0
+        avg_pnl_pct = stats.avg_pnl_pct or 0.0
 
         return {
-            "total_trades": len(all_trades),
-            "winning_trades": len(winning_trades),
-            "losing_trades": len(losing_trades),
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": stats.losing_trades or 0,
             "total_pnl": round(total_pnl, 2),
-            "win_rate": round((len(winning_trades) / len(all_trades)) * 100, 2),
-            "avg_pnl": round(total_pnl / len(all_trades), 2),
-            "avg_pnl_pct": round(sum(t.pnl_pct for t in all_trades) / len(all_trades), 2),
+            "win_rate": round((winning_trades / total_trades) * 100, 2),
+            "avg_pnl": round(avg_pnl, 2),
+            "avg_pnl_pct": round(avg_pnl_pct, 2),
         }
 
 
